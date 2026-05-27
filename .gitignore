@@ -1,0 +1,15 @@
+node_modules/
+configs/
+.venv/
+__pycache__/
+.pycache/
+*.pyc
+.DS_Store
+outputs/.tmp/
+outputs/eastmoney_*.csv
+outputs/single_stock_intraday/
+outputs/model_5d_return/
+frontend/dist/
+frontend/*.tsbuildinfo
+frontend/vite.config.js
+frontend/vite.config.d.ts
