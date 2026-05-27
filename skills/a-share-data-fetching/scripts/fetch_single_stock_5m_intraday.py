@@ -14,7 +14,7 @@ from urllib.parse import urlencode
 import pandas as pd
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_OUT_DIR = ROOT / "outputs" / "single_stock_intraday"
 
 KLINE_FIELDS = ["时间", "开盘", "收盘", "最高", "最低", "成交量", "成交额", "振幅", "涨跌幅", "涨跌额", "换手率"]

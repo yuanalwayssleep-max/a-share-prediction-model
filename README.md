@@ -1,89 +1,61 @@
-# openCli
+# A股预测模型
 
-This repository currently contains two lines of work:
+这个仓库用于 A 股行情数据抓取、日 K 特征清洗、5 个交易日股票池预测、市场风险预测和最终出手信号判断。
 
-1. OpenCLI usage / automation notes.
-2. A-share machine-learning and trading-practice experiments.
+## 目录
 
-The current priority is the A-share workflow: daily K-line data, 5-trading-day direction/return modeling, market-risk correction, signal filtering, and a small-account trading discipline framework.
+- `data/`：原始行情快照和原始日 K 数据。
+- `outputs/`：抓取脚本产生的原始输出，例如股票日 K、单股分时和 5 分钟 K。
+- `skills/a-share-data-fetching/`：行情数据抓取 skill。
+- `skills/a-share-kline-return-modeling/`：5 日预测模型 skill，包含清洗、个股模型、市场风险模型和最终信号层。
 
-## Repository Layout
+根目录不再保留通用 `scripts/` 业务脚本，避免和 skill 内脚本混用。
 
-- `data/` - Input snapshots and the `10w炒股专项` trading-practice materials.
-- `outputs/` - Raw or intermediate market-data outputs, including refreshed daily K-line directories.
-- `scripts/` - Python scripts for the current crawlers and 5-day prediction workflow.
-- `skills/a-share-kline-return-modeling/` - Agent skill and outputs for A-share 5-day return/direction modeling.
-- `skills/a-share-stock-selection/` - Agent skill and references for late-session A-share stock selection.
+## 数据抓取
 
-## Python Setup
-
-Create a virtual environment, then install dependencies:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
-The scripts expect Python 3 and use `numpy`, `pandas`, `scikit-learn`, and several A-share data packages.
-
-## Main A-Share Workflows
-
-### 1. Generate or inspect 5-day direction predictions
-
-Single anchor date:
-
-```bash
-python3 scripts/train_5d_direction_model.py --as-of-date 2026-04-24 --feature-set core
-```
-
-Batch run:
-
-```bash
-python3 scripts/run_5d_direction_batch.py --start-date 2026-04-01 --end-date 2026-04-30 --feature-set core
-```
-
-Optional correction and signal layer:
-
-```bash
-python3 scripts/run_5d_direction_batch.py \
-  --start-date 2026-04-01 \
-  --end-date 2026-04-30 \
-  --feature-set core \
-  --run-correction \
-  --run-signal
-```
-
-### 2. Train or run 5-day return model
-
-```bash
-python3 scripts/train_5d_return_model.py --as-of-date 2026-05-13
-```
-
-Rolling backtest:
-
-```bash
-python3 scripts/train_5d_return_model.py --rolling-backtest --anchor-end-date 2026-05-06
-```
-
-### 3. A-share late-session selection
-
-The late-session stock-selection process is documented in:
+抓取脚本统一放在：
 
 ```text
-skills/a-share-stock-selection/SKILL.md
+skills/a-share-data-fetching/scripts/
 ```
 
-It is a stricter trading workflow for late-session overnight candidates and next-day sell plans. Treat it as a trading-discipline layer, not as a replacement for model validation.
+保留的抓取入口：
 
-## Current Data Notes
+- `fetch_stock_daily_k_batch.py`：批量抓取股票日 K。
+- `fetch_core_index_daily_k.py`：抓取核心指数日 K。
+- `fetch_single_stock_5m_intraday.py`：抓取单只股票分时、1 分钟 K、5 分钟 K。
 
-- `skills/a-share-kline-return-modeling/outputs/00_5日涨跌方向预测样本明细.csv` contains the current main modeling sample table.
-- `skills/a-share-kline-return-modeling/outputs/00_5日方向模型特征表.csv` contains the current feature table.
-- `outputs/stock_daily_k/日K线目录/` is the default refreshed stock daily K-line directory.
-- `skills/a-share-kline-return-modeling/outputs/00_A股日K.csv` is the current base daily K table used by split/model scripts.
-- `data/a股快照_20260515.csv` appears incomplete compared with earlier snapshots and should be refreshed before being used for decision-making.
+示例：
 
-## Caution
+```bash
+python3 skills/a-share-data-fetching/scripts/fetch_stock_daily_k_batch.py \
+  --symbols-csv skills/a-share-kline-return-modeling/data/00_股票清单.csv \
+  --start-date 2025-01-01 \
+  --end-date 2026-05-27 \
+  --mode stale
+```
 
-This project is for research and trading-discipline support. Model outputs are probabilistic and can fail badly in regime shifts. Do not treat any prediction or candidate list as financial advice or a guaranteed signal.
+## 模型流程
+
+模型脚本统一放在：
+
+```text
+skills/a-share-kline-return-modeling/scripts/
+```
+
+核心流程：
+
+1. `clean_data.py`：清洗原始日 K，生成两张模型输入表。
+2. `predict_stock_direction.py`：个股 Top 股票池预测。
+3. `predict_market_risk.py`：未来 5 日市场风险预测。
+4. `apply_signal_decision_layer.py`：根据个股预测和市场风险输出 `Top3 / Top2 / Top1 / 不出手`。
+
+详细命令见：
+
+```text
+skills/a-share-kline-return-modeling/README.md
+```
+
+## 注意
+
+模型输出只用于研究和交易纪律辅助，不是收益保证，也不是投资建议。所有带 `future_5_*` 前缀的字段只能作为训练标签或回测判卷使用，不能进入预测特征。

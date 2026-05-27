@@ -11,8 +11,8 @@ from pathlib import Path
 from typing import Any
 
 
-ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_SYMBOLS_CSV = ROOT / "skills" / "a-share-kline-return-modeling" / "outputs" / "00_股票清单.csv"
+ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_SYMBOLS_CSV = ROOT / "skills" / "a-share-kline-return-modeling" / "data" / "00_股票清单.csv"
 DEFAULT_DAILY_DIR = ROOT / "outputs" / "stock_daily_k" / "日K线目录"
 
 DAILY_FIELDS = ["日期", "开盘", "收盘", "最高", "最低", "成交量", "成交额", "振幅", "涨跌幅", "涨跌额", "换手率"]
