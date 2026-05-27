@@ -1,6 +1,6 @@
 # A股日K 5日预测模型
 
-这个目录是 A 股 5 个交易日预测模型的独立工作区。原始数据仍然放在仓库根目录的 `data/` 下，本目录只保存清洗后的模型输入数据、模型脚本和预测输出。
+这个目录是 A 股 5 个交易日预测模型的独立工作区。原始行情数据放在 `skills/a-share-data-fetching/data/` 下，本目录只保存清洗后的模型输入数据、模型脚本和预测输出。
 
 ## 流程
 
@@ -31,8 +31,12 @@
 ## 数据清洗
 
 ```bash
-python3 skills/a-share-kline-return-modeling/scripts/clean_data.py
+python3 skills/a-share-kline-return-modeling/scripts/00_clean_data.py
 ```
+
+默认读取原始数据目录：
+
+- `skills/a-share-data-fetching/data/`
 
 清洗后得到：
 
@@ -44,7 +48,7 @@ python3 skills/a-share-kline-return-modeling/scripts/clean_data.py
 当前收敛方案只使用 Top 股票池预测。它用于每天挑选模型认为更可能进入未来 5 日收益 Top20 的股票。下面例子是每天只输出排名前 3 只：
 
 ```bash
-python3 skills/a-share-kline-return-modeling/scripts/predict_stock_direction.py \
+python3 skills/a-share-kline-return-modeling/scripts/01_predict_stock_direction.py \
   --stock-list skills/a-share-kline-return-modeling/data/00_股票清单.csv \
   --start-date 2026-04-01 \
   --end-date 2026-04-30
@@ -66,7 +70,7 @@ python3 skills/a-share-kline-return-modeling/scripts/predict_stock_direction.py 
 用于预测未来 5 日市场方向和风险状态：
 
 ```bash
-python3 skills/a-share-kline-return-modeling/scripts/predict_market_risk.py \
+python3 skills/a-share-kline-return-modeling/scripts/02_predict_market_risk.py \
   --start-date 2026-04-01 \
   --end-date 2026-04-30
 ```
@@ -91,12 +95,12 @@ python3 skills/a-share-kline-return-modeling/scripts/predict_market_risk.py \
 运行示例：
 
 ```bash
-python3 skills/a-share-kline-return-modeling/scripts/apply_signal_decision_layer.py \
+python3 skills/a-share-kline-return-modeling/scripts/03_apply_signal_decision_layer.py \
   --stock-prediction skills/a-share-kline-return-modeling/outputs/stock_direction_predictions/个股5日Top20预测_Top3输出_20260401_20260430_系统日期20260526.csv \
   --market-prediction skills/a-share-kline-return-modeling/outputs/market_risk_predictions/市场5日风险预测_20260401_20260430_系统日期20260526.csv
 ```
 
-信号层会读取 `个股k线特征数据.csv` 做候选股风险识别。它不会重新训练模型，只做最后的出手判断：
+信号层会读取 `个股k线特征数据.csv` 做候选股风险识别。它不会重新训练模型，只做最后的出手判断。节假日不是单独专题流程，而是和市场风险、市场宽度、行业强弱一样作为信号层参考项：
 
 - 高位、高换手、高波动且行业支撑不足的候选股会被视为脆弱候选。
 - 中期涨幅高、短期已经转弱，同时换手和波动仍高，且市场/行业当天偏弱的候选股会被视为脆弱候选。
@@ -113,9 +117,9 @@ python3 skills/a-share-kline-return-modeling/scripts/apply_signal_decision_layer
 
 - `outputs/final_signals/`
 
-## 节假日前后专题预测
+## 节假日参考项
 
-节假日特征已经写入清洗后的个股表和指数表。脚本会根据交易日之间的长休市间隔自动识别假期，不手工维护节日表。
+节假日特征已经写入清洗后的个股表和指数表。清洗脚本会根据交易日之间的长休市间隔自动识别假期，不手工维护节日表。
 
 清洗表新增的节假日特征包括：
 
@@ -125,30 +129,16 @@ python3 skills/a-share-kline-return-modeling/scripts/apply_signal_decision_layer
 - `post_holiday_tday`：长假后第几个交易日。
 - `holiday_gap_days`：本次休市自然日长度。
 
-运行 2025 春节前至今的节假日前后窗口预测：
-
-```bash
-python3 skills/a-share-kline-return-modeling/scripts/predict_holiday_windows.py \
-  --start-date 2025-01-01 \
-  --end-date 2026-05-26
-```
-
-输出目录：
-
-- `outputs/holiday_window_predictions/`
+这些字段由 `00_clean_data.py` 生成，并在 `03_apply_signal_decision_layer.py` 中参与最终出手修正。不要把节假日作为独立预测脚本长期维护。
 
 ## 当前保留脚本
 
 当前收敛后的主流程只保留下面 4 个脚本：
 
-- `scripts/clean_data.py`：清洗原始数据，生成两张模型输入表。
-- `scripts/predict_stock_direction.py`：个股 Top 股票池预测。
-- `scripts/predict_market_risk.py`：市场风险预测。
-- `scripts/apply_signal_decision_layer.py`：最终四档出手信号。
-
-节假日前后专题使用：
-
-- `scripts/predict_holiday_windows.py`：只对节前/节后窗口锚点做预测和汇总。
+- `scripts/00_clean_data.py`：清洗原始数据，生成两张模型输入表。
+- `scripts/01_predict_stock_direction.py`：个股 Top 股票池预测。
+- `scripts/02_predict_market_risk.py`：市场风险预测。
+- `scripts/03_apply_signal_decision_layer.py`：最终四档出手信号。
 
 ## 核心原则
 

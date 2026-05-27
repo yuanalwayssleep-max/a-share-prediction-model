@@ -2,7 +2,7 @@
 
 ## 目标
 
-先把 `data/` 下的原始数据整理成稳定、可复跑、可审计的数据层。后续模型不直接读取原始 CSV，而是读取清洗后的标准表。
+先把 `skills/a-share-data-fetching/data/` 下的原始数据整理成稳定、可复跑、可审计的数据层。后续模型不直接读取原始 CSV，而是读取清洗后的标准表。
 
 ## 数据分层
 
@@ -10,9 +10,9 @@
 
 只读，不改写：
 
-- `data/单只股票日k/*.csv`：一只股票一个日K文件。
-- `data/指数日K文件/00_核心指数日K.csv`：核心指数日K汇总。
-- `data/a股快照历史/*.csv` 和 `data/a股快照_*.csv`：股票元数据和行业/板块快照。
+- `skills/a-share-data-fetching/data/单只股票日k/*.csv`：一只股票一个日K文件。
+- `skills/a-share-data-fetching/data/指数日K文件/00_核心指数日K.csv`：核心指数日K汇总。
+- `skills/a-share-data-fetching/data/a股快照历史/*.csv` 和 `skills/a-share-data-fetching/data/a股快照_*.csv`：股票元数据和行业/板块快照。
 
 ### 清洗层 Clean
 

@@ -43,8 +43,8 @@ python3 skills/a-share-data-fetching/scripts/fetch_single_stock_5m_intraday.py \
 
 ## 输出约定
 
-- 股票日 K 默认输出到仓库根目录 `outputs/stock_daily_k/日K线目录/`。
-- 核心指数日 K 默认输出到仓库根目录 `data/指数日K文件/00_核心指数日K.csv`。
-- 单只股票分时和 5 分钟 K 默认输出到仓库根目录 `outputs/single_stock_intraday/`。
+- 股票日 K 默认输出到 `skills/a-share-data-fetching/data/单只股票日k/`。
+- 核心指数日 K 默认输出到 `skills/a-share-data-fetching/data/指数日K文件/00_核心指数日K.csv`。
+- 单只股票分时、1 分钟 K、5 分钟 K 默认输出到 `skills/a-share-data-fetching/data/single_stock_intraday/`。
 
 抓取完成后，如需进入 5 日预测流程，再使用 `skills/a-share-kline-return-modeling/` 下的清洗和建模脚本。

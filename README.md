@@ -4,9 +4,8 @@
 
 ## 目录
 
-- `data/`：原始行情快照和原始日 K 数据。
-- `outputs/`：抓取脚本产生的原始输出，例如股票日 K、单股分时和 5 分钟 K。
-- `skills/a-share-data-fetching/`：行情数据抓取 skill。
+- `skills/a-share-data-fetching/`：行情数据抓取 skill，原始行情数据也放在这里。
+- `skills/a-share-data-fetching/data/`：原始行情快照、股票日 K、指数日 K、单股分时和 5 分钟 K。
 - `skills/a-share-kline-return-modeling/`：5 日预测模型 skill，包含清洗、个股模型、市场风险模型和最终信号层。
 
 根目录不再保留通用 `scripts/` 业务脚本，避免和 skill 内脚本混用。
@@ -45,10 +44,10 @@ skills/a-share-kline-return-modeling/scripts/
 
 核心流程：
 
-1. `clean_data.py`：清洗原始日 K，生成两张模型输入表。
-2. `predict_stock_direction.py`：个股 Top 股票池预测。
-3. `predict_market_risk.py`：未来 5 日市场风险预测。
-4. `apply_signal_decision_layer.py`：根据个股预测和市场风险输出 `Top3 / Top2 / Top1 / 不出手`。
+1. `00_clean_data.py`：从 `skills/a-share-data-fetching/data/` 读取原始日 K，生成两张模型输入表。
+2. `01_predict_stock_direction.py`：个股 Top 股票池预测。
+3. `02_predict_market_risk.py`：未来 5 日市场风险预测。
+4. `03_apply_signal_decision_layer.py`：根据个股预测和市场风险输出 `Top3 / Top2 / Top1 / 不出手`。
 
 详细命令见：
 

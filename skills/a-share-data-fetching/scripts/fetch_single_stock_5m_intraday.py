@@ -15,7 +15,8 @@ import pandas as pd
 
 
 ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_OUT_DIR = ROOT / "outputs" / "single_stock_intraday"
+SKILL_DIR = Path(__file__).resolve().parents[1]
+DEFAULT_OUT_DIR = SKILL_DIR / "data" / "single_stock_intraday"
 
 KLINE_FIELDS = ["时间", "开盘", "收盘", "最高", "最低", "成交量", "成交额", "振幅", "涨跌幅", "涨跌额", "换手率"]
 INTRADAY_FIELDS = ["时间", "最新价", "均价", "最高", "最低", "成交量", "成交额", "最新价_格式化"]

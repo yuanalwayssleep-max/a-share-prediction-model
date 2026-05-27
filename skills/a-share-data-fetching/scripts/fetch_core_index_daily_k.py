@@ -12,7 +12,8 @@ import pandas as pd
 
 
 ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_OUTPUT = ROOT / "data" / "指数日K文件" / "00_核心指数日K.csv"
+SKILL_DIR = Path(__file__).resolve().parents[1]
+DEFAULT_OUTPUT = SKILL_DIR / "data" / "指数日K文件" / "00_核心指数日K.csv"
 DEFAULT_FEATURE_OUTPUT = ROOT / "skills" / "a-share-kline-return-modeling" / "outputs" / "00_核心指数特征.csv"
 
 INDEX_CODES = {
