@@ -16,6 +16,7 @@ STOCK_FEATURES = ROOT / "skills/a-share-kline-return-modeling/data/clean_stock_f
 SUMMARY = ROOT / "skills/a-share-kline-return-modeling/outputs/evaluation/build_features_summary.json"
 
 FORBIDDEN_MODEL_PREFIXES = ("future_", "entry_", "exit_", "actual_")
+FORBIDDEN_MODEL_SUFFIXES = ("_label",)
 
 
 def load_stock_features() -> pd.DataFrame:
@@ -65,6 +66,7 @@ def test_no_future_feature_leakage_summary() -> None:
     summary = json.loads(SUMMARY.read_text(encoding="utf-8"))
     signal_features = summary["signal_known_features"]
     forbidden = [c for c in signal_features if c.startswith(FORBIDDEN_MODEL_PREFIXES)]
+    forbidden += [c for c in signal_features if c.endswith(FORBIDDEN_MODEL_SUFFIXES)]
     assert forbidden == []
 
 

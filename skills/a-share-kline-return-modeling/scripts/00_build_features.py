@@ -28,6 +28,7 @@ DEFAULT_CONFIG = {
 }
 
 MODEL_FORBIDDEN_PREFIXES = ("future_", "label_", "entry_", "exit_", "actual_")
+MODEL_FORBIDDEN_SUFFIXES = ("_label",)
 MODEL_FORBIDDEN_COLUMNS = {
     "gross_future_5_return",
     "buy_cost_rate",
@@ -425,6 +426,8 @@ def get_signal_known_features(df: pd.DataFrame) -> list[str]:
             continue
         if col.startswith(MODEL_FORBIDDEN_PREFIXES):
             continue
+        if col.endswith(MODEL_FORBIDDEN_SUFFIXES):
+            continue
         if pd.api.types.is_numeric_dtype(df[col]):
             features.append(col)
     return features
@@ -471,6 +474,7 @@ def main() -> None:
                 "data_quality_report": str(report_path),
                 "signal_known_features": get_signal_known_features(stock_features),
                 "forbidden_prefixes": MODEL_FORBIDDEN_PREFIXES,
+                "forbidden_suffixes": MODEL_FORBIDDEN_SUFFIXES,
                 "forbidden_columns": sorted(MODEL_FORBIDDEN_COLUMNS),
             },
             ensure_ascii=False,

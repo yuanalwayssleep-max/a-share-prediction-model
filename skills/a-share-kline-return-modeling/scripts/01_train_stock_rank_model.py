@@ -14,6 +14,7 @@ DEFAULT_FEATURES = Path("skills/a-share-kline-return-modeling/data/clean_stock_f
 DEFAULT_OUTPUT_DIR = Path("skills/a-share-kline-return-modeling/outputs/stock_rank_predictions")
 
 FORBIDDEN_PREFIXES = ("future_", "label_", "entry_", "exit_", "actual_")
+FORBIDDEN_SUFFIXES = ("_label",)
 FORBIDDEN_COLUMNS = {
     "trade_date",
     "symbol",
@@ -37,6 +38,18 @@ FORBIDDEN_COLUMNS = {
     "absolute_strong_level",
 }
 
+SAFE_PREDICTION_FEATURES = [
+    "ret_5",
+    "ret_20",
+    "amount_ratio_5",
+    "turnover_pct",
+    "range_pos_20",
+    "volatility_5",
+    "near_limit_up",
+    "overheat_flag",
+    "low_liquidity_flag",
+]
+
 
 def load_features(path: Path) -> pd.DataFrame:
     date_cols = ["trade_date", "entry_trade_date", "exit_trade_date", "actual_exit_trade_date"]
@@ -49,6 +62,8 @@ def select_feature_columns(df: pd.DataFrame) -> list[str]:
         if col in FORBIDDEN_COLUMNS:
             continue
         if col.startswith(FORBIDDEN_PREFIXES):
+            continue
+        if col.endswith(FORBIDDEN_SUFFIXES):
             continue
         if pd.api.types.is_bool_dtype(df[col]) or pd.api.types.is_numeric_dtype(df[col]):
             cols.append(col)
@@ -144,6 +159,7 @@ def train_and_predict(
                     "industry_strength_score",
                     "model_name",
                 ]
+                + [col for col in SAFE_PREDICTION_FEATURES if col in top.columns]
             ]
         )
         truth_predictions.append(
@@ -164,6 +180,7 @@ def train_and_predict(
                     "label_top30",
                     "label_top50",
                 ]
+                + [col for col in SAFE_PREDICTION_FEATURES if col in top.columns]
             ]
         )
         diagnostics.append(
