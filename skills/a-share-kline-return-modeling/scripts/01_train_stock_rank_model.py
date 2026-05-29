@@ -20,6 +20,7 @@ FORBIDDEN_COLUMNS = {
     "name",
     "industry",
     "board",
+    "source_duplicate_row",
     "gross_future_5_return",
     "buy_cost_rate",
     "sell_cost_rate",

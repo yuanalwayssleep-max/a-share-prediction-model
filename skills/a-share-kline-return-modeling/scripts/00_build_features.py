@@ -48,6 +48,7 @@ MODEL_FORBIDDEN_COLUMNS = {
     "name",
     "industry",
     "board",
+    "source_duplicate_row",
 }
 
 
