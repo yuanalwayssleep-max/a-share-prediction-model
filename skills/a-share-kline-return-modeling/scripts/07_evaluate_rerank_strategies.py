@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evaluate second-stage reranking strategies inside model Top30 candidates."""
+"""Evaluate approved second-stage reranking strategies inside model candidates."""
 
 from __future__ import annotations
 
@@ -25,10 +25,19 @@ RERANK_FEATURES = [
 ]
 
 
-def load_candidates(pred_root: Path, features_path: Path) -> pd.DataFrame:
+def load_candidates(
+    pred_root: Path,
+    features_path: Path,
+    start_period: str | None = None,
+    end_period: str | None = None,
+) -> pd.DataFrame:
     frames: list[pd.DataFrame] = []
     for path in sorted(pred_root.glob("20??-??/predictions_with_truth.csv")):
         period = path.parent.name
+        if start_period and period < start_period:
+            continue
+        if end_period and period > end_period:
+            continue
         df = pd.read_csv(path, encoding="utf-8-sig", parse_dates=["trade_date"])
         df["period"] = period
         frames.append(df)
@@ -54,11 +63,6 @@ def add_rank_columns(df: pd.DataFrame) -> pd.DataFrame:
     out["blend_model_amount"] = (
         0.50 * out["rank_strength_score_candidate_rank_pct"]
         + 0.30 * out["amount_ratio_5_candidate_rank_pct"]
-        + 0.20 * out["industry_strength_score_candidate_rank_pct"]
-    )
-    out["blend_amount_momentum"] = (
-        0.45 * out["amount_ratio_5_candidate_rank_pct"]
-        + 0.35 * out["ret_5_candidate_rank_pct"]
         + 0.20 * out["industry_strength_score_candidate_rank_pct"]
     )
     out["blend_model_low_overheat"] = (
@@ -132,18 +136,24 @@ def main() -> None:
     parser.add_argument("--features", type=Path, default=DEFAULT_FEATURES)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--top-n", type=int, default=3)
+    parser.add_argument("--start-period")
+    parser.add_argument("--end-period")
     args = parser.parse_args()
 
-    candidates = add_rank_columns(load_candidates(args.pred_root, args.features))
+    candidates = add_rank_columns(
+        load_candidates(
+            args.pred_root,
+            args.features,
+            start_period=args.start_period,
+            end_period=args.end_period,
+        )
+    )
     score_map = {
+        # Raw model Top3 baseline. This must remain in every M3 rerank evaluation.
         "model_score": "rank_strength_score",
-        "amount_ratio_5": "amount_ratio_5",
-        "ret_5": "ret_5",
+        # Approved by CR-20260529-001.
         "ret_20": "ret_20",
-        "turnover_pct": "turnover_pct",
-        "industry_strength": "industry_strength_score",
         "blend_model_amount": "blend_model_amount",
-        "blend_amount_momentum": "blend_amount_momentum",
         "blend_model_low_overheat": "blend_model_low_overheat",
     }
     picks = pd.concat(
@@ -158,7 +168,14 @@ def main() -> None:
     daily.to_csv(args.output_dir / "rerank_daily_summary.csv", index=False, encoding="utf-8-sig")
     monthly.to_csv(args.output_dir / "rerank_monthly_summary.csv", index=False, encoding="utf-8-sig")
     summary.to_csv(args.output_dir / "rerank_overall_summary.csv", index=False, encoding="utf-8-sig")
-    md = ["# Rerank Strategy Summary", "", summary.to_markdown(index=False), ""]
+    md = [
+        "# Rerank Strategy Summary",
+        "",
+        "Scope: raw model Top3 baseline plus CR-20260529-001 approved rule reranks only.",
+        "",
+        summary.to_markdown(index=False),
+        "",
+    ]
     md.append("## Monthly")
     md.append("")
     md.append(monthly.to_markdown(index=False))

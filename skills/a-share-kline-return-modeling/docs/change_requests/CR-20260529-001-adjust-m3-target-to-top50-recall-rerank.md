@@ -1,6 +1,6 @@
 # CR-20260529-001 调整 M3 目标为 Top50 召回 + 二次排序
 
-状态：待审批
+状态：已实施
 提出日期：2026-05-29
 提出人：Codex
 影响阶段：M3 个股强势排序模型、M4 Walk-forward 验证
@@ -138,9 +138,36 @@ M3-B 二次排序：
 
 ## 审批记录
 
-待审批。
+审批结论：已批准，附带约束。
+审批时间：2026-05-29 21:59 GMT+8
+审批人：boss
+审批意见：
+
+```text
+同意将 M3 调整为 Top50 候选池召回 + 候选池内二次排序选 Top3。
+第一版仅批准规则二次排序方案：ret_20、blend_model_low_overheat、blend_model_amount。
+必须保留 raw model Top3 基线，不得修改标签、交易口径、成本滑点、未来泄漏规则或 walk-forward 切分。
+如后续引入二阶段模型，需另提变更请求。
+```
 
 ## 实施记录
 
-未实施。
+实施时间：2026-05-29 GMT+8
+实施人：Codex
 
+实施内容：
+
+```text
+已将 M3 文档目标同步为 Top50 候选池召回 + 候选池内规则二次排序 Top3。
+已保留 raw model score Top3 作为 walk-forward 与 rerank 评估基线。
+已将 05_run_walk_forward.py 的汇总扩展为 raw 基线 + 已批准二次排序策略。
+已将 07_evaluate_rerank_strategies.py 限定为 raw model_score、ret_20、blend_model_low_overheat、blend_model_amount。
+```
+
+验证结果：
+
+```text
+python3 -m py_compile 05_run_walk_forward.py 07_evaluate_rerank_strategies.py 00_build_features.py 01_train_stock_rank_model.py 04_evaluate_top3.py：通过
+python3 skills/a-share-kline-return-modeling/tests/test_build_features_contract.py：通过
+python3 skills/a-share-kline-return-modeling/scripts/07_evaluate_rerank_strategies.py --start-period 2025-05 --end-period 2026-04：通过
+```

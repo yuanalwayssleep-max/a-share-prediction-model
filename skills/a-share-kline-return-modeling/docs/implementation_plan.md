@@ -9,11 +9,11 @@
   ↓
 生成特征与标签
   ↓
-训练个股强势排序模型
+训练个股强势排序模型，先召回 Top50 候选池
   ↓
 训练市场机会密度模型
   ↓
-融合个股排序、行业强度和风险惩罚
+在候选池内用批准规则二次排序
   ↓
 用市场机会密度决定 Top3 / Top2 / Top1 / 不出手
 ```
@@ -780,7 +780,7 @@ Top10/Top30/Top50 每日数量检查
 ```text
 训练个股强势排序模型
 按锚点日滚动训练
-输出每日 TopN 排名
+输出每日 TopN 候选池排名
 ```
 
 第一版模型：
@@ -804,7 +804,7 @@ group：trade_date
 python3 skills/a-share-kline-return-modeling/scripts/01_train_stock_rank_model.py \
   --start-date 2025-05-01 \
   --end-date 2025-05-31 \
-  --top-n 30
+  --top-n 50
 ```
 
 训练窗口：
@@ -836,6 +836,8 @@ future_5_trade_date = 2026-04-15
 outputs/stock_rank_predictions/predictions.csv
 outputs/stock_rank_predictions/predictions_with_truth.csv
 ```
+
+根据 CR-20260529-001，`--top-n 50` 是 M3 第一阶段默认候选池口径。raw model score Top3 必须作为评估基线保留，但不再把 raw score 直接 Top3 作为唯一 M3 目标。
 
 `predictions.csv` 只包含预测时可用字段：
 
@@ -880,6 +882,43 @@ tradable_at_exit
 ```text
 03_generate_final_signals.py 只能读取 predictions.csv。
 04_evaluate_top3.py 可以读取 predictions_with_truth.csv 或自行合并 truth。
+```
+
+### 2.1 Top50 候选池内二次排序
+
+职责：
+
+```text
+读取模型 Top50 候选池
+保留 raw model score Top3 基线
+在候选池内评估已批准的规则二次排序
+输出各策略按日、按月和整体汇总
+```
+
+第一版只允许 CR-20260529-001 批准的规则：
+
+```text
+ret_20
+blend_model_low_overheat
+blend_model_amount
+```
+
+强制约束：
+
+```text
+不得修改标签定义。
+不得修改 T+1 open -> T+6 open 主交易口径。
+不得修改成本、滑点、未来泄漏规则或 walk-forward 切分。
+不得引入二阶段学习模型；如需引入，必须另提变更请求。
+```
+
+输出：
+
+```text
+outputs/evaluation/rerank_daily_summary.csv
+outputs/evaluation/rerank_monthly_summary.csv
+outputs/evaluation/rerank_overall_summary.csv
+outputs/evaluation/rerank_strategy_summary.md
 ```
 
 训练脚本必须校验：
@@ -1181,6 +1220,9 @@ V1 组合级回测默认规则：
 ```text
 rank_strength_score
 industry_strength_score
+ret_20
+amount_ratio_5
+range_pos_20
 ```
 
 市场机会密度只用于控制出手数量，不进入同日个股排序。
@@ -1188,15 +1230,16 @@ industry_strength_score
 验收要求：
 
 ```text
-Top3扣费后平均收益 > 随机Top3
-Top3扣费后平均收益 >= 近5日动量Top3
-Top3命中Top30平均数量 > 随机Top3
-Top3命中Top30平均数量 >= 近5日动量Top3
-Top3命中Top10平均数量有改善
+Top50候选池平均真实Top30命中显著高于随机Top50
+最终Top3扣费后平均收益 > 随机Top3
+最终Top3扣费后平均收益 >= 最强简单基准之一
+最终Top3命中Top30平均数量 > raw model Top3
+最终Top3命中Top10平均数量有改善
 至少 2/3 验证月份优于随机基准
 按月不能只靠单月贡献
 Bootstrap 置信区间不能显示完全不显著
 低机会密度月份减少无效出手
+必须保留 raw model Top3 基线
 ```
 
 ### 第二阶段验收
@@ -1320,6 +1363,7 @@ risk_penalty 连续扣分第二阶段再做，不进入 V1 主排序分
 
 ```text
 outputs/evaluation/walk_forward_summary.csv
+outputs/evaluation/rerank_walk_forward/rerank_strategy_summary.md
 ```
 
 建议字段：
@@ -1354,4 +1398,5 @@ signal_industry_concentration
 
 ```text
 判断不同月份和不同市场环境下系统是否稳定，而不是只看单次结果。
+同时对比 raw model Top3 基线与批准的 Top50 候选池二次排序规则。
 ```

@@ -16,6 +16,12 @@ ROOT = Path(__file__).resolve().parents[3]
 SCRIPT_DIR = ROOT / "skills/a-share-kline-return-modeling/scripts"
 EVAL_DIR = ROOT / "skills/a-share-kline-return-modeling/outputs/evaluation"
 PRED_DIR = ROOT / "skills/a-share-kline-return-modeling/outputs/stock_rank_predictions"
+APPROVED_RERANK_STRATEGIES = [
+    "model_score",
+    "ret_20",
+    "blend_model_low_overheat",
+    "blend_model_amount",
+]
 
 
 def run_command(cmd: list[str]) -> None:
@@ -38,6 +44,16 @@ def read_strategy_row(path: Path, strategy: str) -> dict[str, object]:
     if row.empty:
         raise ValueError(f"Missing strategy={strategy} in {path}")
     return row.iloc[0].to_dict()
+
+
+def append_rerank_metrics(summary: pd.DataFrame, rerank_monthly_path: Path) -> pd.DataFrame:
+    rerank = pd.read_csv(rerank_monthly_path)
+    keep = rerank[rerank["strategy"].isin(APPROVED_RERANK_STRATEGIES)].copy()
+    metric_cols = ["avg_return", "avg_hit_top10", "avg_hit_top30", "hit_at_least_one"]
+    wide = keep.pivot(index="period", columns="strategy", values=metric_cols)
+    wide.columns = [f"{strategy}_{metric}" for metric, strategy in wide.columns]
+    wide = wide.reset_index()
+    return summary.merge(wide, on="period", how="left")
 
 
 def main() -> None:
@@ -116,6 +132,24 @@ def main() -> None:
         )
 
     summary = pd.DataFrame(rows)
+    rerank_dir = EVAL_DIR / "rerank_walk_forward"
+    run_command(
+        [
+            sys.executable,
+            str(SCRIPT_DIR / "07_evaluate_rerank_strategies.py"),
+            "--pred-root",
+            str(PRED_DIR),
+            "--output-dir",
+            str(rerank_dir),
+            "--top-n",
+            str(args.top_n_eval),
+            "--start-period",
+            args.start_month,
+            "--end-period",
+            args.end_month,
+        ]
+    )
+    summary = append_rerank_metrics(summary, rerank_dir / "rerank_monthly_summary.csv")
     out_path = EVAL_DIR / "walk_forward_summary.csv"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     summary.to_csv(out_path, index=False, encoding="utf-8-sig")
@@ -132,6 +166,13 @@ def main() -> None:
         "win_return_vs_amount_ratio": (summary["return_vs_amount"] > 0).mean(),
         "win_hit30_vs_random_ratio": (summary["hit30_vs_random"] > 0).mean(),
     }
+    for strategy in APPROVED_RERANK_STRATEGIES:
+        return_col = f"{strategy}_avg_return"
+        hit30_col = f"{strategy}_avg_hit_top30"
+        if return_col in summary.columns:
+            aggregate[f"avg_{strategy}_return"] = summary[return_col].mean()
+        if hit30_col in summary.columns:
+            aggregate[f"avg_{strategy}_hit_top30"] = summary[hit30_col].mean()
     lines.append("```json")
     lines.append(json.dumps(aggregate, ensure_ascii=False, indent=2))
     lines.append("```")
