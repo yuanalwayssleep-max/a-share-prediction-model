@@ -7,13 +7,11 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
-from sklearn.metrics import accuracy_score
 
 try:
-    from lightgbm import LGBMClassifier, LGBMRegressor
+    from lightgbm import LGBMClassifier
 except Exception:  # pragma: no cover - depends on local environment
     LGBMClassifier = None
-    LGBMRegressor = None
 
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
@@ -21,63 +19,90 @@ DEFAULT_STOCK_FEATURE_FILE = SKILL_DIR / "data" / "个股k线特征数据.csv"
 DEFAULT_STOCK_LIST_FILE = SKILL_DIR / "data" / "00_股票清单.csv"
 DEFAULT_OUTPUT_DIR = SKILL_DIR / "outputs" / "stock_direction_predictions"
 
-LABEL_COL = "future_5_up_label"
-RETURN_LABEL_COL = "future_5_return"
 DATE_COL = "trade_date"
+RETURN_LABEL_COL = "future_5_return"
 MODEL_LABEL_COL = "model_up_label"
-RANK_TARGET_COL = "future_5_return_rank_score"
+SAMPLE_WEIGHT_COL = "sample_weight"
 
-FORBIDDEN_EXACT_COLUMNS = {
-    "日期",
-    DATE_COL,
-    "future_5_trade_date",
-    "future_5_close",
-    "future_5_return",
-    "future_5_direction",
-    "future_5_up_label",
-    "name",
-    "name_from_file",
-    "source_file",
-    "exchange",
-    "board",
-    "industry",
-    "region",
-    "themes",
-    "quality_issues",
-    "quality_issue_count",
-    "has_hard_issue",
-    "has_soft_issue",
-    "is_training_eligible",
-}
+CANDIDATE_TOP_N = 20
+LABEL_UP_THRESHOLD = 0.20
+PREDICTION_THRESHOLD = 0.50
+FEATURE_SET_NAME = "compact60"
 
-FORBIDDEN_PREFIXES = ("future_",)
+FEATURE_COLUMNS = [
+    "amp_mean_5",
+    "turnover_pct",
+    "dist_high_60",
+    "industry_index_ret_5_xrank",
+    "dist_high_20",
+    "market_up_ratio_xrank",
+    "amp_mean_3",
+    "industry_ret_20_xrank",
+    "dist_low_60",
+    "dist_low_20",
+    "industry_index_volatility_5",
+    "industry_avg_turnover_pct",
+    "market_ret_5_ge05_ratio",
+    "ret_3_xrank",
+    "ret_3_minus_ret_10",
+    "industry_index_ret_20_xrank",
+    "stock_vs_industry_range_pos_20",
+    "stock_industry_range_pos_20_rank",
+    "industry_index_amount_ratio_5",
+    "volatility_5_xrank",
+    "stock_vs_industry_index_ret_20",
+    "industry_index_ret_20",
+    "volatility_10_xrank",
+    "range_pos_60",
+    "volatility_10",
+    "pullback_setup_score",
+    "industry_index_ret_5",
+    "industry_avg_range_pos_20",
+    "stock_vs_industry_ret_5",
+    "stock_vs_industry_turnover_pct",
+    "range_pos_60_xrank",
+    "industry_index_range_pos_20",
+    "ret_10",
+    "ret_10_xrank",
+    "volatility_5",
+    "stock_industry_ret_20_rank",
+    "stock_market_ret_5_minus_ret_20_rank",
+    "turnover_amount_strength_5",
+    "stock_market_turnover_rank",
+    "volatility_3",
+    "stock_industry_turnover_rank",
+    "industry_avg_ret_20",
+    "stock_vs_industry_ret_20",
+    "industry_ret_5_xrank",
+    "strong_pullback_failure_score",
+    "market_ret_5_le_neg05_ratio",
+    "industry_up_ratio_xrank",
+    "industry_ret_20_mean",
+    "ret_5_minus_ret_20",
+    "close_ma_ratio_5",
+    "stock_industry_amount_ratio_5_rank",
+    "industry_index_close_ma_ratio_5",
+    "stock_vs_industry_index_ret_5",
+    "stock_market_range_pos_20_rank",
+    "pullback_setup_score_xrank",
+    "stock_industry_momentum_improve_rank",
+    "ret_1_minus_ret_5",
+    "close_position_in_day",
+    "stock_market_momentum_improve_rank",
+    "ret_2_minus_ret_5",
+]
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="个股5日Top股票池预测：按股票清单和日期范围逐日锚点预测")
-    parser.add_argument("--stock-list", default=str(DEFAULT_STOCK_LIST_FILE), help="股票清单路径，默认 data/00_股票清单.csv")
-    parser.add_argument("--stock-file", default=str(DEFAULT_STOCK_FEATURE_FILE), help="内部特征数据路径，默认 data/个股k线特征数据.csv")
+    parser = argparse.ArgumentParser(description="个股未来5日强收益预测：每日输出Top20候选池")
+    parser.add_argument("--stock-list", default=str(DEFAULT_STOCK_LIST_FILE), help="股票清单路径")
+    parser.add_argument("--stock-file", default=str(DEFAULT_STOCK_FEATURE_FILE), help="个股特征数据路径")
     parser.add_argument("--start-date", required=True, help="预测起始锚点日，格式 YYYY-MM-DD")
     parser.add_argument("--end-date", required=True, help="预测结束锚点日，格式 YYYY-MM-DD")
-    parser.add_argument("--lookback-days", type=int, default=365, help="每个锚点日前向训练窗口自然日数；单日未指定训练区间时也使用此窗口")
-    parser.add_argument("--min-anchor-coverage", type=float, default=0.9, help="默认锚点日最低股票覆盖率；按历史最大股票数计算")
-    parser.add_argument(
-        "--target-mode",
-        choices=["direction", "top_quantile", "rank_return"],
-        default="rank_return",
-        help="训练目标：默认横截面未来5日收益排名分数；top_quantile为同日收益前N分位分类；direction仅用于研究",
-    )
-    parser.add_argument("--top-quantile", type=float, default=0.2, help="target-mode=top_quantile 时，未来5日收益排名前多少比例标为1")
-    parser.add_argument("--threshold", type=float, default=0.5, help="上涨方向判定阈值")
-    parser.add_argument("--label-up-threshold", type=float, default=0.01, help="训练上涨标签阈值，默认未来5日收益 >= 1%%")
-    parser.add_argument("--label-down-threshold", type=float, default=-0.01, help="训练下跌标签阈值，默认未来5日收益 <= -1%%")
-    parser.add_argument("--exclude-st", action="store_true", default=True, help="训练时剔除 ST 股票，默认开启")
-    parser.add_argument("--include-st", dest="exclude_st", action="store_false", help="训练时保留 ST 股票")
-    parser.add_argument("--exclude-st-prediction", action="store_true", default=True, help="预测股票池剔除 ST 股票，默认开启")
-    parser.add_argument("--include-st-prediction", dest="exclude_st_prediction", action="store_false", help="预测股票池保留 ST 股票")
-    parser.add_argument("--top-n", type=int, default=3, help="只输出概率最高的N只；默认3；0表示输出全部")
-    parser.add_argument("--enable-overheat-penalty", action="store_true", help="开启Top分位模式的高换手高波动过热惩罚；默认关闭")
-    parser.add_argument("--disable-overheat-penalty", action="store_false", dest="enable_overheat_penalty", help=argparse.SUPPRESS)
+    parser.add_argument("--lookback-days", type=int, default=730, help="每个锚点日前向训练窗口自然日数")
+    parser.add_argument("--train-start-date", default="", help="显式训练起始日期，格式 YYYY-MM-DD")
+    parser.add_argument("--train-end-date", default="", help="显式特征结束日期，格式 YYYY-MM-DD")
+    parser.add_argument("--min-anchor-coverage", type=float, default=0.9, help="锚点日最低股票覆盖率")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR), help="预测结果输出目录")
     return parser.parse_args()
 
@@ -94,10 +119,8 @@ def load_stock_features(path: Path) -> pd.DataFrame:
     df = pd.read_csv(path, encoding="utf-8-sig", dtype={"symbol": str})
     df["symbol"] = df["symbol"].str.extract(r"(\d{1,6})", expand=False).str.zfill(6)
     df[DATE_COL] = pd.to_datetime(df[DATE_COL], errors="coerce")
-    if "future_5_trade_date" in df.columns:
-        df["future_5_trade_date"] = pd.to_datetime(df["future_5_trade_date"], errors="coerce")
-    df = df.dropna(subset=[DATE_COL, "symbol"]).copy()
-    return df
+    df["future_5_trade_date"] = pd.to_datetime(df["future_5_trade_date"], errors="coerce")
+    return df.dropna(subset=[DATE_COL, "symbol"]).copy()
 
 
 def load_stock_list(path: Path) -> pd.DataFrame:
@@ -122,38 +145,6 @@ def date_coverage(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
-def choose_anchor_date(df: pd.DataFrame, requested: str, min_coverage: float, allow_partial: bool) -> pd.Timestamp:
-    coverage = date_coverage(df)
-    if coverage.empty:
-        raise RuntimeError("个股特征表没有可用交易日")
-
-    if requested:
-        anchor = pd.to_datetime(requested)
-        if df[DATE_COL].eq(anchor).sum() == 0:
-            available = df.loc[df[DATE_COL] <= anchor, DATE_COL].drop_duplicates().sort_values()
-            hint = available.iloc[-1].strftime("%Y-%m-%d") if not available.empty else "无"
-            raise ValueError(f"锚点日 {anchor:%Y-%m-%d} 没有个股样本；最近可用交易日: {hint}")
-        row = coverage.loc[coverage[DATE_COL].eq(anchor)].iloc[0]
-        if row["coverage_ratio"] < min_coverage and not allow_partial:
-            latest_full = coverage.loc[coverage["coverage_ratio"] >= min_coverage, DATE_COL].max()
-            hint = latest_full.strftime("%Y-%m-%d") if pd.notna(latest_full) else "无"
-            raise ValueError(
-                f"锚点日 {anchor:%Y-%m-%d} 覆盖率不足: "
-                f"{int(row['stock_count'])} 只, 覆盖率 {row['coverage_ratio']:.2%}; "
-                f"最近覆盖率达标交易日: {hint}。如仍要预测，添加 --allow-partial-anchor。"
-            )
-        return anchor
-
-    eligible = coverage.loc[coverage["coverage_ratio"] >= min_coverage]
-    if eligible.empty:
-        latest = coverage.iloc[-1]
-        raise RuntimeError(
-            f"没有覆盖率达到 {min_coverage:.0%} 的交易日；"
-            f"最新交易日 {latest[DATE_COL]:%Y-%m-%d} 只有 {int(latest['stock_count'])} 只。"
-        )
-    return eligible[DATE_COL].max()
-
-
 def anchor_dates_for_range(df: pd.DataFrame, start_date: str, end_date: str, min_coverage: float) -> pd.DataFrame:
     start = pd.to_datetime(start_date)
     end = pd.to_datetime(end_date)
@@ -169,26 +160,13 @@ def anchor_dates_for_range(df: pd.DataFrame, start_date: str, end_date: str, min
     return anchors.sort_values(DATE_COL)
 
 
-def select_feature_columns(df: pd.DataFrame) -> list[str]:
-    numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-    features: list[str] = []
-    for col in numeric_cols:
-        if col in FORBIDDEN_EXACT_COLUMNS:
-            continue
-        if any(col.startswith(prefix) for prefix in FORBIDDEN_PREFIXES):
-            continue
-        features.append(col)
-    if not features:
-        raise RuntimeError("没有可用特征列，请检查个股特征表")
-    return features
-
-
 def add_cross_section_features(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     rank_cols = [
         "pct_chg",
         "turnover_pct",
         "ret_1",
+        "ret_2",
         "ret_3",
         "ret_5",
         "ret_10",
@@ -196,6 +174,15 @@ def add_cross_section_features(df: pd.DataFrame) -> pd.DataFrame:
         "volatility_5",
         "volatility_10",
         "range_pos_20",
+        "range_pos_60",
+        "amount_ratio_3",
+        "amount_ratio_5",
+        "vol_ratio_3",
+        "pullback_setup_score",
+        "momentum_continuation_score",
+        "overextended_momentum_score",
+        "terminal_chase_risk_score",
+        "strong_pullback_failure_score",
         "stock_vs_market_pct_chg",
         "stock_vs_industry_pct_chg",
         "industry_up_ratio",
@@ -213,9 +200,91 @@ def add_cross_section_features(df: pd.DataFrame) -> pd.DataFrame:
     if {"industry", "ret_20"}.issubset(df.columns):
         df["industry_ret_20_mean"] = df.groupby([DATE_COL, "industry"])["ret_20"].transform("mean")
         df["industry_ret_20_xrank"] = df.groupby(DATE_COL)["industry_ret_20_mean"].rank(method="average", pct=True)
-    if {"industry", "future_5_return"}.issubset(df.columns):
-        df["industry_future_5_return_mean"] = df.groupby([DATE_COL, "industry"])["future_5_return"].transform("mean")
+    return neutralize_small_industry_ranks(df)
+
+
+def neutralize_small_industry_ranks(df: pd.DataFrame, min_industry_count: int = 5) -> pd.DataFrame:
+    if "industry_stock_count" not in df.columns:
+        return df
+    rank_fallback = {
+        "stock_industry_pct_chg_rank": "stock_market_pct_chg_rank",
+        "stock_industry_ret_5_rank": "stock_market_ret_5_rank",
+        "stock_industry_ret_20_rank": "stock_market_ret_20_rank",
+        "stock_industry_turnover_rank": "stock_market_turnover_rank",
+        "stock_industry_amount_ratio_5_rank": "stock_market_amount_ratio_5_rank",
+        "stock_industry_range_pos_20_rank": "stock_market_range_pos_20_rank",
+    }
+    small_industry = df["industry_stock_count"].fillna(0) < min_industry_count
+    for industry_rank_col, market_rank_col in rank_fallback.items():
+        if industry_rank_col not in df.columns:
+            continue
+        if market_rank_col in df.columns:
+            df.loc[small_industry, industry_rank_col] = df.loc[small_industry, market_rank_col]
+        else:
+            df.loc[small_industry, industry_rank_col] = 0.5
+    if {"stock_industry_ret_5_rank", "stock_industry_ret_20_rank"}.issubset(df.columns):
+        df["stock_industry_momentum_improve_rank"] = (
+            df["stock_industry_ret_5_rank"] - df["stock_industry_ret_20_rank"]
+        )
     return df
+
+
+def select_feature_columns(df: pd.DataFrame) -> list[str]:
+    missing = [col for col in FEATURE_COLUMNS if col not in df.columns]
+    if missing:
+        raise RuntimeError(f"当前最优特征缺失: {','.join(missing)}")
+    selected = set(FEATURE_COLUMNS)
+    return [col for col in df.select_dtypes(include=[np.number]).columns if col in selected]
+
+
+def build_sample_weight(train_df: pd.DataFrame) -> pd.Series:
+    returns = train_df[RETURN_LABEL_COL].astype(float)
+    weights = pd.Series(1.0, index=train_df.index)
+
+    positive = returns >= LABEL_UP_THRESHOLD
+    upside_extra = ((returns - LABEL_UP_THRESHOLD) / 0.10).clip(lower=0, upper=3)
+    weights.loc[positive] = 1.0 + upside_extra.loc[positive]
+    weights.loc[returns >= 0.15] = np.maximum(weights.loc[returns >= 0.15], 3.0)
+    weights.loc[returns >= 0.20] = np.maximum(weights.loc[returns >= 0.20], 4.0)
+
+    bad_loss = returns <= -0.05
+    fake_strong_loss = pd.Series(False, index=train_df.index)
+    if "ret_5" in train_df.columns:
+        fake_strong_loss |= bad_loss & (train_df["ret_5"] >= 0.05)
+    if "ret_20" in train_df.columns:
+        fake_strong_loss |= bad_loss & (train_df["ret_20"] >= 0.10)
+    if "range_pos_20" in train_df.columns:
+        fake_strong_loss |= bad_loss & (train_df["range_pos_20"] >= 0.80)
+    if "stock_market_ret_5_rank" in train_df.columns:
+        fake_strong_loss |= bad_loss & (train_df["stock_market_ret_5_rank"] >= 0.80)
+
+    terminal_loss = pd.Series(False, index=train_df.index)
+    if "terminal_chase_risk_score" in train_df.columns:
+        terminal_loss |= bad_loss & (train_df["terminal_chase_risk_score"] >= 0.70)
+    if "overextended_momentum_score" in train_df.columns:
+        terminal_loss |= bad_loss & (train_df["overextended_momentum_score"] >= 0.70)
+    if "strong_pullback_failure_score" in train_df.columns:
+        terminal_loss |= bad_loss & (train_df["strong_pullback_failure_score"] >= 0.65)
+    if "is_overextended_momentum" in train_df.columns:
+        terminal_loss |= bad_loss & train_df["is_overextended_momentum"].eq(1)
+    if "is_strong_pullback_failure" in train_df.columns:
+        terminal_loss |= bad_loss & train_df["is_strong_pullback_failure"].eq(1)
+    if "near_limit_after_runup_risk" in train_df.columns:
+        terminal_loss |= bad_loss & train_df["near_limit_after_runup_risk"].eq(1)
+
+    weak_loss = bad_loss.copy()
+    if "ret_1" in train_df.columns:
+        weak_loss &= train_df["ret_1"] <= -0.03
+    if "ret_5" in train_df.columns:
+        weak_loss |= bad_loss & (train_df["ret_5"] <= -0.03)
+    if "ret_10" in train_df.columns:
+        weak_loss |= bad_loss & (train_df["ret_10"] <= -0.03)
+
+    weights.loc[bad_loss] = np.maximum(weights.loc[bad_loss], 2.5)
+    weights.loc[weak_loss] = np.maximum(weights.loc[weak_loss], 5.0)
+    weights.loc[fake_strong_loss] = np.maximum(weights.loc[fake_strong_loss], 4.0)
+    weights.loc[terminal_loss] = np.maximum(weights.loc[terminal_loss], 6.0)
+    return weights
 
 
 def make_train_predict_sets(
@@ -223,18 +292,8 @@ def make_train_predict_sets(
     anchor_date: pd.Timestamp,
     train_start: str,
     train_end: str,
-    label_up_threshold: float,
-    label_down_threshold: float,
-    exclude_st: bool,
-    exclude_st_prediction: bool,
-    target_mode: str,
-    top_quantile: float,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
-    if label_down_threshold >= label_up_threshold:
-        raise ValueError("label-down-threshold 必须小于 label-up-threshold")
-    if not 0 < top_quantile < 1:
-        raise ValueError("top-quantile 必须在 0 到 1 之间")
-    train_mask = df[DATE_COL] < anchor_date
+    train_mask = df[DATE_COL] <= anchor_date
     if train_start:
         train_mask &= df[DATE_COL] >= pd.to_datetime(train_start)
     if train_end:
@@ -243,59 +302,29 @@ def make_train_predict_sets(
     train_df = df.loc[
         train_mask
         & df["is_training_eligible"].eq(1)
-        & df[LABEL_COL].notna()
         & df[RETURN_LABEL_COL].notna()
         & df["future_5_trade_date"].notna()
-        & (df["future_5_trade_date"] < anchor_date)
+        & (df["future_5_trade_date"] <= anchor_date)
     ].copy()
-    if exclude_st and "is_st" in train_df.columns:
+    if "is_st" in train_df.columns:
         train_df = train_df.loc[train_df["is_st"].fillna(0).eq(0)].copy()
-    if target_mode == "direction":
-        train_df = train_df.loc[
-            (train_df[RETURN_LABEL_COL] >= label_up_threshold)
-            | (train_df[RETURN_LABEL_COL] <= label_down_threshold)
-        ].copy()
-        train_df[MODEL_LABEL_COL] = (train_df[RETURN_LABEL_COL] >= label_up_threshold).astype(int)
-    elif target_mode == "top_quantile":
-        train_df["daily_return_rank"] = train_df.groupby(DATE_COL)[RETURN_LABEL_COL].rank(method="first", ascending=False)
-        train_df["daily_stock_count"] = train_df.groupby(DATE_COL)["symbol"].transform("count")
-        train_df["daily_top_cutoff"] = np.ceil(train_df["daily_stock_count"] * top_quantile).clip(lower=1)
-        train_df[MODEL_LABEL_COL] = (train_df["daily_return_rank"] <= train_df["daily_top_cutoff"]).astype(int)
-    else:
-        train_df[RANK_TARGET_COL] = train_df.groupby(DATE_COL)[RETURN_LABEL_COL].rank(method="average", pct=True)
+    train_df[MODEL_LABEL_COL] = (train_df[RETURN_LABEL_COL] >= LABEL_UP_THRESHOLD).astype(int)
+    train_df[SAMPLE_WEIGHT_COL] = build_sample_weight(train_df)
+
     predict_df = df.loc[df[DATE_COL].eq(anchor_date)].copy()
-    if exclude_st_prediction and "is_st" in predict_df.columns:
+    if "is_st" in predict_df.columns:
         predict_df = predict_df.loc[predict_df["is_st"].fillna(0).eq(0)].copy()
 
     if train_df.empty:
         raise RuntimeError("训练样本为空：请检查锚点日、训练日期范围和标签列")
-    if target_mode != "rank_return" and train_df[MODEL_LABEL_COL].nunique() < 2:
+    if train_df[MODEL_LABEL_COL].nunique() < 2:
         raise RuntimeError("训练样本只有单一标签，无法训练分类模型")
     if predict_df.empty:
-        raise RuntimeError("预测样本为空：请检查锚点日")
+        raise RuntimeError(f"预测样本为空: {anchor_date:%Y-%m-%d}")
     return train_df, predict_df
 
 
-def fit_model(train_df: pd.DataFrame, feature_cols: list[str], target_mode: str):
-    if target_mode == "rank_return":
-        if LGBMRegressor is None:
-            raise RuntimeError("当前环境未安装或无法加载 lightgbm，请先安装 lightgbm 和 libomp")
-        model = LGBMRegressor(
-            n_estimators=520,
-            learning_rate=0.02,
-            num_leaves=31,
-            min_child_samples=70,
-            subsample=0.85,
-            colsample_bytree=0.80,
-            reg_lambda=2.5,
-            objective="regression",
-            random_state=42,
-            n_jobs=-1,
-            verbosity=-1,
-        )
-        model.fit(train_df[feature_cols], train_df[RANK_TARGET_COL])
-        return model
-
+def fit_model(train_df: pd.DataFrame, feature_cols: list[str]) -> LGBMClassifier:
     if LGBMClassifier is None:
         raise RuntimeError("当前环境未安装或无法加载 lightgbm，请先安装 lightgbm 和 libomp")
     model = LGBMClassifier(
@@ -312,102 +341,92 @@ def fit_model(train_df: pd.DataFrame, feature_cols: list[str], target_mode: str)
         n_jobs=-1,
         verbosity=-1,
     )
-    label_col = MODEL_LABEL_COL if MODEL_LABEL_COL in train_df.columns else LABEL_COL
-    model.fit(train_df[feature_cols], train_df[label_col].astype(int))
+    model.fit(
+        train_df[feature_cols],
+        train_df[MODEL_LABEL_COL].astype(int),
+        sample_weight=train_df[SAMPLE_WEIGHT_COL],
+    )
     return model
 
 
-def score_prediction(prediction: pd.DataFrame, threshold: float) -> dict[str, object]:
-    labeled = prediction.loc[prediction[LABEL_COL].notna()].copy()
-    if labeled.empty:
-        return {"accuracy": None, "actual_up_rate": None, "predicted_up_rate": None}
-    y_true = labeled[LABEL_COL].astype(int)
-    y_pred = (labeled["predicted_up_prob"] >= threshold).astype(int)
-    return {
-        "accuracy": float(accuracy_score(y_true, y_pred)),
-        "actual_up_rate": float(y_true.mean()),
-        "predicted_up_rate": float(y_pred.mean()),
-    }
-
-
-def score_top_quantile_prediction(prediction: pd.DataFrame, threshold: float) -> dict[str, object]:
-    labeled = prediction.loc[prediction["actual_top_quantile_label"].notna()].copy()
-    if labeled.empty:
-        return {"top_quantile_accuracy": None, "actual_top_quantile_rate": None, "predicted_top_quantile_rate": None}
-    y_true = labeled["actual_top_quantile_label"].astype(int)
-    score_col = "top_quantile_signal_score" if "top_quantile_signal_score" in labeled.columns else "predicted_top_quantile_prob"
-    y_pred = (labeled[score_col] >= threshold).astype(int)
-    return {
-        "top_quantile_accuracy": float(accuracy_score(y_true, y_pred)),
-        "actual_top_quantile_rate": float(y_true.mean()),
-        "predicted_top_quantile_rate": float(y_pred.mean()),
-    }
-
-
-def _percentile_rank(df: pd.DataFrame, col: str) -> pd.Series:
-    if col not in df.columns:
-        return pd.Series(np.nan, index=df.index)
-    return df[col].rank(method="average", pct=True)
-
-
-def build_overheat_penalty(predict_df: pd.DataFrame) -> pd.DataFrame:
+def build_terminal_risk_penalty(predict_df: pd.DataFrame) -> pd.DataFrame:
     penalty = pd.DataFrame(index=predict_df.index)
-    penalty["turnover_pctile"] = _percentile_rank(predict_df, "turnover_pct")
-    penalty["ret_5_pctile"] = _percentile_rank(predict_df, "ret_5")
-    penalty["ret_20_pctile"] = _percentile_rank(predict_df, "ret_20")
-    penalty["volatility_5_pctile"] = _percentile_rank(predict_df, "volatility_5")
-    penalty["range_pos_20_pctile"] = _percentile_rank(predict_df, "range_pos_20")
 
-    strong_momentum = (penalty["ret_5_pctile"] >= 0.9) | (penalty["ret_20_pctile"] >= 0.9)
-    high_position = predict_df.get("range_pos_20", pd.Series(np.nan, index=predict_df.index)) >= 0.8
-    high_turnover = penalty["turnover_pctile"] >= 0.9
-    extreme_turnover = penalty["turnover_pctile"] >= 0.98
-    high_volatility = penalty["volatility_5_pctile"] >= 0.9
-    extreme_volatility = penalty["volatility_5_pctile"] >= 0.95
+    def feature(name: str, default: float = 0.0) -> pd.Series:
+        if name in predict_df.columns:
+            return pd.to_numeric(predict_df[name], errors="coerce").fillna(default).clip(lower=0, upper=1)
+        return pd.Series(default, index=predict_df.index, dtype=float)
 
-    core_overheat = high_turnover & strong_momentum & high_position
-    volatile_overheat = high_volatility & strong_momentum & high_position
-    extreme_hot = (extreme_turnover | extreme_volatility) & strong_momentum
+    def raw_feature(name: str, default: float = 0.0) -> pd.Series:
+        if name in predict_df.columns:
+            return pd.to_numeric(predict_df[name], errors="coerce").fillna(default)
+        return pd.Series(default, index=predict_df.index, dtype=float)
 
-    penalty["overheat_penalty"] = 0.0
-    penalty.loc[core_overheat, "overheat_penalty"] += 0.10
-    penalty.loc[volatile_overheat, "overheat_penalty"] += 0.06
-    penalty.loc[extreme_hot, "overheat_penalty"] += 0.04
+    overextended = feature("overextended_momentum_score")
+    terminal = feature("terminal_chase_risk_score")
+    pullback_failure = feature("strong_pullback_failure_score")
+    ret_5_rank = feature("stock_market_ret_5_rank")
+    ret_20_rank = feature("stock_market_ret_20_rank")
+    turnover_rank = feature("stock_market_turnover_rank")
+    range_pos_20 = feature("range_pos_20")
+    turnover_pct = raw_feature("turnover_pct")
+    close_position = raw_feature("close_position_in_day")
+    ret_3 = raw_feature("ret_3")
+    ret_5 = raw_feature("ret_5")
+    ret_20 = raw_feature("ret_20")
 
-    industry_support = (
-        (predict_df.get("industry_up_ratio", pd.Series(np.nan, index=predict_df.index)) >= 0.8)
-        & (
-            predict_df.get("industry_avg_pct_chg", pd.Series(np.nan, index=predict_df.index))
-            >= predict_df.get("market_avg_pct_chg", pd.Series(np.nan, index=predict_df.index))
-        )
+    hot_trend_turnover = (ret_20_rank >= 0.90) & (range_pos_20 >= 0.75) & (turnover_rank >= 0.80)
+    extreme_hot = (ret_5_rank >= 0.85) & (ret_20_rank >= 0.85) & (range_pos_20 >= 0.80)
+    terminal_shape = (overextended >= 0.60) | (terminal >= 0.65) | (pullback_failure >= 0.60)
+    extreme_turnover_chase = (
+        (turnover_rank >= 0.95)
+        & (turnover_pct >= 12)
+        & (range_pos_20 >= 0.75)
+        & (close_position >= 0.55)
     )
-    penalty.loc[industry_support, "overheat_penalty"] *= 0.35
-    penalty["overheat_penalty"] = penalty["overheat_penalty"].clip(upper=0.18)
+    ultra_turnover_high_position = (
+        (turnover_pct >= 20)
+        & (range_pos_20 >= 0.80)
+        & (close_position >= 0.50)
+    )
+    weak_base_short_pop = (
+        (ret_20 <= 0.02)
+        & (ret_3 >= 0.06)
+        & (ret_5 >= 0.05)
+        & (ret_5_rank >= 0.70)
+        & (close_position >= 0.60)
+    )
+
+    penalty["terminal_risk_penalty"] = 0.15 * overextended
+    penalty.loc[hot_trend_turnover, "terminal_risk_penalty"] += 0.12
+    penalty.loc[extreme_hot, "terminal_risk_penalty"] += 0.10
+    penalty.loc[terminal_shape, "terminal_risk_penalty"] += 0.08
+    penalty.loc[extreme_turnover_chase, "terminal_risk_penalty"] += 0.16
+    penalty.loc[ultra_turnover_high_position, "terminal_risk_penalty"] += 0.14
+    penalty.loc[weak_base_short_pop, "terminal_risk_penalty"] += 0.24
+    penalty["terminal_risk_penalty"] = penalty["terminal_risk_penalty"].clip(upper=0.70)
 
     reasons: list[str] = []
-    for idx in penalty.index:
+    for idx in predict_df.index:
         row_reasons: list[str] = []
-        if bool(core_overheat.loc[idx]):
-            row_reasons.append("高换手+强动量+高位")
-        if bool(volatile_overheat.loc[idx]):
-            row_reasons.append("高波动+强动量+高位")
+        if bool(hot_trend_turnover.loc[idx]):
+            row_reasons.append("高位趋势+高换手")
         if bool(extreme_hot.loc[idx]):
-            row_reasons.append("极端换手/波动+强动量")
+            row_reasons.append("短中期极热")
+        if bool(terminal_shape.loc[idx]):
+            row_reasons.append("末端追高形态")
+        if bool(extreme_turnover_chase.loc[idx]):
+            row_reasons.append("极端换手高位收盘")
+        if bool(ultra_turnover_high_position.loc[idx]):
+            row_reasons.append("超高换手高位")
+        if bool(weak_base_short_pop.loc[idx]):
+            row_reasons.append("弱中期短线急拉")
         reasons.append(";".join(row_reasons))
-    penalty["overheat_penalty_reason"] = reasons
+    penalty["terminal_risk_reason"] = reasons
     return penalty
 
 
-def build_prediction_output(
-    model,
-    predict_df: pd.DataFrame,
-    feature_cols: list[str],
-    threshold: float,
-    top_n: int,
-    target_mode: str,
-    top_quantile: float,
-    apply_overheat_penalty: bool,
-) -> pd.DataFrame:
+def build_prediction_output(model, predict_df: pd.DataFrame, feature_cols: list[str]) -> pd.DataFrame:
     out_cols = [
         "trade_date",
         "symbol",
@@ -422,53 +441,92 @@ def build_prediction_output(
         "future_5_return",
         "future_5_direction",
         "future_5_up_label",
+        "label_5d_ge10",
+        "label_5d_ge05",
+        "label_5d_loss05",
+        "daily_future_return_rank",
+        "daily_future_return_top3_label",
     ]
     output = predict_df[[col for col in out_cols if col in predict_df.columns]].copy()
-    if target_mode == "rank_return":
-        raw_score = model.predict(predict_df[feature_cols])
-        prob = pd.Series(raw_score, index=predict_df.index).rank(method="first", pct=True).to_numpy()
-    else:
-        prob = model.predict_proba(predict_df[feature_cols])[:, 1]
-    if target_mode == "direction":
-        output["predicted_up_prob"] = prob
-        output["predicted_down_prob"] = 1 - prob
-        output["predicted_direction"] = np.where(output["predicted_up_prob"] >= threshold, "上涨", "下跌")
-        output["direction_threshold"] = threshold
-        output["rank_by_up_prob"] = output["predicted_up_prob"].rank(method="first", ascending=False).astype(int)
-        output = output.sort_values(["predicted_up_prob", "symbol"], ascending=[False, True]).reset_index(drop=True)
-    else:
-        output["predicted_top_quantile_prob"] = prob
-        output["predicted_non_top_quantile_prob"] = 1 - prob
-        if target_mode == "rank_return":
-            output["predicted_return_rank_score"] = raw_score
-        output["top_quantile_threshold"] = top_quantile
-        output["target_threshold"] = threshold
-        output["rank_by_raw_top_quantile_prob"] = output["predicted_top_quantile_prob"].rank(method="first", ascending=False).astype(int)
-        if apply_overheat_penalty:
-            penalty = build_overheat_penalty(predict_df)
-            output = output.join(penalty)
-        else:
-            output["overheat_penalty"] = 0.0
-            output["overheat_penalty_reason"] = ""
-        output["top_quantile_signal_score"] = (output["predicted_top_quantile_prob"] - output["overheat_penalty"]).clip(lower=0, upper=1)
-        output["predicted_top_quantile"] = np.where(output["top_quantile_signal_score"] >= threshold, 1, 0)
-        output["rank_by_top_quantile_prob"] = output["top_quantile_signal_score"].rank(method="first", ascending=False).astype(int)
-        output["actual_future_5_return_rank"] = output[RETURN_LABEL_COL].rank(method="first", ascending=False)
-        actual_count = output[RETURN_LABEL_COL].notna().sum()
-        if actual_count > 0:
-            cutoff = max(1, int(np.ceil(actual_count * top_quantile)))
-            output["actual_top_quantile_label"] = np.where(output["actual_future_5_return_rank"] <= cutoff, 1, 0)
-            output.loc[output[RETURN_LABEL_COL].isna(), "actual_top_quantile_label"] = np.nan
-        else:
-            output["actual_top_quantile_label"] = np.nan
-        output = output.sort_values(["top_quantile_signal_score", "symbol"], ascending=[False, True]).reset_index(drop=True)
-    if top_n > 0:
-        output = output.head(top_n).copy()
+    prob = model.predict_proba(predict_df[feature_cols])[:, 1]
+    output["predicted_return_threshold_prob"] = prob
+    output["predicted_below_return_threshold_prob"] = 1 - prob
+    output["probability_threshold"] = PREDICTION_THRESHOLD
+    output["return_label_threshold"] = LABEL_UP_THRESHOLD
+    output["actual_return_threshold_label"] = np.where(
+        output[RETURN_LABEL_COL].notna(),
+        (output[RETURN_LABEL_COL] >= LABEL_UP_THRESHOLD).astype(int),
+        np.nan,
+    )
+    output["rank_by_return_threshold_prob"] = output["predicted_return_threshold_prob"].rank(
+        method="first",
+        ascending=False,
+    ).astype(int)
+
+    output = output.join(build_terminal_risk_penalty(predict_df))
+    output["final_return_signal_score"] = output["predicted_return_threshold_prob"] - output["terminal_risk_penalty"]
+    output = output.sort_values(
+        ["final_return_signal_score", "predicted_return_threshold_prob", "symbol"],
+        ascending=[False, False, True],
+    ).head(CANDIDATE_TOP_N).reset_index(drop=True)
+    output["rank_by_final_return_signal_score"] = np.arange(1, len(output) + 1)
     output["model_type"] = "LightGBM"
     output["trade_date"] = pd.to_datetime(output["trade_date"], errors="coerce").dt.strftime("%Y-%m-%d")
     if "future_5_trade_date" in output.columns:
         output["future_5_trade_date"] = pd.to_datetime(output["future_5_trade_date"], errors="coerce").dt.strftime("%Y-%m-%d")
     return output
+
+
+def format_date_or_empty(value: pd.Timestamp | str | None) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    return pd.to_datetime(value).strftime("%Y-%m-%d")
+
+
+def append_metadata(
+    prediction: pd.DataFrame,
+    train_df: pd.DataFrame,
+    predict_df: pd.DataFrame,
+    anchor_date: pd.Timestamp,
+    requested_train_start: str,
+    requested_train_end: str,
+    feature_count: int,
+) -> None:
+    labeled_train_start = format_date_or_empty(train_df[DATE_COL].min())
+    labeled_train_end = format_date_or_empty(train_df[DATE_COL].max())
+    requested_end = requested_train_end or anchor_date.strftime("%Y-%m-%d")
+
+    prediction["anchor_date"] = anchor_date.strftime("%Y-%m-%d")
+    prediction["prediction_feature_date"] = anchor_date.strftime("%Y-%m-%d")
+    prediction["prediction_feature_rows"] = len(predict_df)
+    prediction["requested_train_start"] = requested_train_start
+    prediction["requested_train_end"] = requested_end
+    prediction["effective_labeled_train_start"] = labeled_train_start
+    prediction["effective_labeled_train_end"] = labeled_train_end
+    prediction["label_known_by_date"] = anchor_date.strftime("%Y-%m-%d")
+    prediction["train_rows"] = len(train_df)
+    prediction["train_dates"] = train_df[DATE_COL].nunique()
+    prediction["train_label_up_threshold"] = LABEL_UP_THRESHOLD
+    prediction["train_exclude_st"] = 1
+    prediction["prediction_exclude_st"] = 1
+    prediction["feature_set"] = FEATURE_SET_NAME
+    prediction["feature_count"] = feature_count
+    prediction["terminal_risk_penalty_enabled"] = 1
+
+
+def summarize_top_pick_metrics(prediction: pd.DataFrame) -> str:
+    returns = pd.to_numeric(prediction[RETURN_LABEL_COL], errors="coerce")
+    top3_returns = returns.head(3)
+    ge10 = int((top3_returns >= 0.10).sum())
+    ge05 = int((top3_returns >= 0.05).sum())
+    loss05 = int((top3_returns <= -0.05).sum())
+    avg_return = top3_returns.mean()
+    avg_text = "None" if pd.isna(avg_return) else f"{avg_return:.2%}"
+    return (
+        f"candidates={len(prediction)}, "
+        f"raw_top3_ge10={ge10}/3, raw_top3_ge05={ge05}/3, "
+        f"raw_top3_loss05={loss05}/3, raw_top3_avg_return={avg_text}"
+    )
 
 
 def predict_one_anchor(
@@ -477,51 +535,19 @@ def predict_one_anchor(
     anchor_date: pd.Timestamp,
     train_start: str,
     train_end: str,
-    threshold: float,
-    top_n: int,
-    label_up_threshold: float,
-    label_down_threshold: float,
-    exclude_st: bool,
-    exclude_st_prediction: bool,
-    target_mode: str,
-    top_quantile: float,
-    apply_overheat_penalty: bool,
 ) -> pd.DataFrame:
-    train_df, predict_df = make_train_predict_sets(
-        df,
+    train_df, predict_df = make_train_predict_sets(df, anchor_date, train_start, train_end)
+    model = fit_model(train_df, feature_cols)
+    prediction = build_prediction_output(model, predict_df, feature_cols)
+    append_metadata(
+        prediction,
+        train_df,
+        predict_df,
         anchor_date,
         train_start,
         train_end,
-        label_up_threshold,
-        label_down_threshold,
-        exclude_st,
-        exclude_st_prediction,
-        target_mode,
-        top_quantile,
+        len(feature_cols),
     )
-    model = fit_model(train_df, feature_cols, target_mode)
-    prediction = build_prediction_output(
-        model,
-        predict_df,
-        feature_cols,
-        threshold,
-        top_n,
-        target_mode,
-        top_quantile,
-        apply_overheat_penalty,
-    )
-    prediction["anchor_date"] = anchor_date.strftime("%Y-%m-%d")
-    prediction["train_start"] = train_df[DATE_COL].min().strftime("%Y-%m-%d")
-    prediction["train_end"] = train_df[DATE_COL].max().strftime("%Y-%m-%d")
-    prediction["train_rows"] = len(train_df)
-    prediction["train_dates"] = train_df[DATE_COL].nunique()
-    prediction["train_label_up_threshold"] = label_up_threshold
-    prediction["train_label_down_threshold"] = label_down_threshold
-    prediction["train_exclude_st"] = int(exclude_st)
-    prediction["prediction_exclude_st"] = int(exclude_st_prediction)
-    prediction["target_mode"] = target_mode
-    prediction["top_quantile"] = top_quantile
-    prediction["overheat_penalty_enabled"] = int(apply_overheat_penalty)
     return prediction
 
 
@@ -529,14 +555,8 @@ def safe_date_tag(value: str) -> str:
     return value.replace("-", "") if value else "all"
 
 
-def output_name(range_tag: str, target_mode: str, top_quantile: float, top_n: int) -> str:
-    scope_tag = f"_Top{top_n}输出" if top_n > 0 else ""
-    if target_mode == "rank_return":
-        return f"个股5日横截面排序预测_LightGBM{scope_tag}_{range_tag}_系统日期{date.today():%Y%m%d}.csv"
-    if target_mode == "top_quantile":
-        quantile_tag = f"Top{int(round(top_quantile * 100))}"
-        return f"个股5日{quantile_tag}预测_LightGBM{scope_tag}_{range_tag}_系统日期{date.today():%Y%m%d}.csv"
-    return f"个股5日方向预测_LightGBM{scope_tag}_{range_tag}_系统日期{date.today():%Y%m%d}.csv"
+def output_name(range_tag: str) -> str:
+    return f"个股5日收益20pct预测_LightGBM_{FEATURE_SET_NAME}_Top{CANDIDATE_TOP_N}候选_{range_tag}_系统日期{date.today():%Y%m%d}.csv"
 
 
 def main() -> None:
@@ -545,6 +565,8 @@ def main() -> None:
     stock_list_file = Path(args.stock_list).resolve()
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
+    start_date = normalize_date(args.start_date)
+    end_date = normalize_date(args.end_date)
 
     stock_list = load_stock_list(stock_list_file)
     df = load_stock_features(stock_file)
@@ -554,41 +576,26 @@ def main() -> None:
     df = add_cross_section_features(df)
 
     feature_cols = select_feature_columns(df)
-    anchors = anchor_dates_for_range(df, normalize_date(args.start_date), normalize_date(args.end_date), args.min_anchor_coverage)
+    print(
+        f"fixed_config: label_up_threshold={LABEL_UP_THRESHOLD:.0%}, "
+        f"feature_set={FEATURE_SET_NAME}, feature_count={len(feature_cols)}, candidate_top_n={CANDIDATE_TOP_N}"
+    )
+
+    anchors = anchor_dates_for_range(df, start_date, end_date, args.min_anchor_coverage)
     frames: list[pd.DataFrame] = []
     for _, anchor_row in anchors.iterrows():
         anchor_date = anchor_row[DATE_COL]
-        train_start = (anchor_date - pd.Timedelta(days=args.lookback_days)).strftime("%Y-%m-%d")
-        prediction = predict_one_anchor(
-            df,
-            feature_cols,
-            anchor_date,
-            train_start,
-            "",
-            args.threshold,
-            args.top_n,
-            args.label_up_threshold,
-            args.label_down_threshold,
-            args.exclude_st,
-            args.exclude_st_prediction,
-            args.target_mode,
-            args.top_quantile,
-            args.enable_overheat_penalty,
-        )
+        train_start = normalize_date(args.train_start_date) if args.train_start_date else (anchor_date - pd.Timedelta(days=args.lookback_days)).strftime("%Y-%m-%d")
+        train_end = normalize_date(args.train_end_date) if args.train_end_date else ""
+        prediction = predict_one_anchor(df, feature_cols, anchor_date, train_start, train_end)
         prediction["anchor_stock_count"] = int(anchor_row["stock_count"])
         prediction["anchor_coverage_ratio"] = float(anchor_row["coverage_ratio"])
         frames.append(prediction)
-        if args.target_mode in {"top_quantile", "rank_return"}:
-            metrics = score_top_quantile_prediction(prediction, args.threshold)
-            print(f"{anchor_date:%Y-%m-%d} done: rows={len(prediction)}, top_quantile_accuracy={metrics['top_quantile_accuracy']}")
-        else:
-            metrics = score_prediction(prediction, args.threshold)
-            print(f"{anchor_date:%Y-%m-%d} done: rows={len(prediction)}, accuracy={metrics['accuracy']}")
+        print(f"{anchor_date:%Y-%m-%d} done: rows={len(prediction)}, {summarize_top_pick_metrics(prediction)}")
 
     result = pd.concat(frames, ignore_index=True)
-    range_tag = f"{safe_date_tag(normalize_date(args.start_date))}_{safe_date_tag(normalize_date(args.end_date))}"
-    prediction_path = output_dir / output_name(range_tag, args.target_mode, args.top_quantile, args.top_n)
-
+    range_tag = f"{safe_date_tag(start_date)}_{safe_date_tag(end_date)}"
+    prediction_path = output_dir / output_name(range_tag)
     result.to_csv(prediction_path, index=False, encoding="utf-8-sig")
     print(f"预测结果: {prediction_path}")
 

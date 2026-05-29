@@ -16,15 +16,15 @@ DEFAULT_OUTPUT_DIR = SKILL_DIR / "outputs" / "final_signals"
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="最终信号层：输出 Top3 / Top2 / Top1 / 不出手")
-    parser.add_argument("--stock-prediction", required=True, help="个股Top股票池预测CSV")
+    parser = argparse.ArgumentParser(description="最终信号层：市场纠正后判断每日是否出手")
+    parser.add_argument("--stock-prediction", required=True, help="个股5日方向预测CSV")
     parser.add_argument("--market-prediction", required=True, help="市场风险预测CSV")
+    parser.add_argument("--industry-prediction", default="", help="行业风险预测CSV；可选，提供后用于第二阶段行业风险矫正")
+    parser.add_argument("--stock-loss-risk-prediction", default="", help="个股5日亏损风险预测CSV；可选，提供后用于过滤5日亏损风险")
     parser.add_argument("--stock-feature-file", default=str(DEFAULT_STOCK_FEATURE_FILE), help="个股k线特征数据.csv路径")
     parser.add_argument("--output-dir", default=str(DEFAULT_OUTPUT_DIR), help="输出目录")
     parser.add_argument("--max-top-n", type=int, default=3, help="最多输出几只股票，默认3")
-    parser.add_argument("--min-top1-score", type=float, default=0.62, help="Top1最低信号分，低于则不出手")
-    parser.add_argument("--min-top2-score", type=float, default=0.68, help="Top2最低信号分")
-    parser.add_argument("--min-top3-score", type=float, default=0.65, help="Top3最低信号分")
+    parser.add_argument("--max-loss05-risk", type=float, default=0.35, help="未来5日亏损超过5%的最大允许概率")
     return parser.parse_args()
 
 
@@ -86,6 +86,94 @@ def build_market_daily(market: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+def build_industry_daily(industry: pd.DataFrame) -> pd.DataFrame:
+    industry = industry.copy()
+    industry["trade_date"] = pd.to_datetime(industry["trade_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    rename = {
+        "industry_index_name": "industry",
+        "industry_index_code": "industry_risk_index_code",
+        "industry_index_level": "industry_risk_index_level",
+    }
+    industry = industry.rename(columns=rename)
+    for col in ["predicted_industry_up_prob", "predicted_industry_down_prob", "industry_index_ret_5", "industry_index_ret_20"]:
+        if col in industry.columns:
+            industry[col] = pd.to_numeric(industry[col], errors="coerce")
+    keep_cols = [
+        "trade_date",
+        "industry",
+        "industry_risk_index_code",
+        "industry_risk_index_level",
+        "predicted_industry_up_prob",
+        "predicted_industry_down_prob",
+        "predicted_industry_direction",
+        "industry_risk_level",
+        "industry_regime",
+        "industry_index_ret_5",
+        "industry_index_ret_20",
+        "industry_index_range_pos_20",
+        "industry_index_ret_5_xrank",
+    ]
+    industry = industry[[col for col in keep_cols if col in industry.columns]].copy()
+    industry = industry.dropna(subset=["trade_date", "industry"]).drop_duplicates(["trade_date", "industry"], keep="last")
+    return industry
+
+
+def normalize_stock_signal_columns(stock: pd.DataFrame) -> pd.DataFrame:
+    stock = stock.copy()
+    if "final_return_signal_score" in stock.columns:
+        stock["signal_score"] = pd.to_numeric(stock["final_return_signal_score"], errors="coerce")
+        if "rank_by_final_return_signal_score" in stock.columns:
+            stock["signal_rank"] = pd.to_numeric(stock["rank_by_final_return_signal_score"], errors="coerce")
+        else:
+            stock["signal_rank"] = stock.groupby("trade_date")["signal_score"].rank(method="first", ascending=False)
+        stock["signal_source"] = "final_return_signal_score"
+        return stock
+
+    if "predicted_return_threshold_prob" in stock.columns:
+        stock["signal_score"] = pd.to_numeric(stock["predicted_return_threshold_prob"], errors="coerce")
+        if "rank_by_return_threshold_prob" in stock.columns:
+            stock["signal_rank"] = pd.to_numeric(stock["rank_by_return_threshold_prob"], errors="coerce")
+        else:
+            stock["signal_rank"] = stock.groupby("trade_date")["signal_score"].rank(method="first", ascending=False)
+        stock["signal_source"] = "predicted_return_threshold_prob"
+        return stock
+
+    if "predicted_up_prob" in stock.columns:
+        stock["signal_score"] = pd.to_numeric(stock["predicted_up_prob"], errors="coerce")
+        if "rank_by_up_prob" in stock.columns:
+            stock["signal_rank"] = pd.to_numeric(stock["rank_by_up_prob"], errors="coerce")
+        else:
+            stock["signal_rank"] = stock.groupby("trade_date")["signal_score"].rank(method="first", ascending=False)
+        stock["signal_source"] = "direction_up_prob"
+        return stock
+
+    if "top_quantile_signal_score" in stock.columns:
+        stock["signal_score"] = pd.to_numeric(stock["top_quantile_signal_score"], errors="coerce")
+        stock["signal_rank"] = pd.to_numeric(stock.get("rank_by_top_quantile_prob"), errors="coerce")
+        if stock["signal_rank"].isna().any():
+            stock["signal_rank"] = stock.groupby("trade_date")["signal_score"].rank(method="first", ascending=False)
+        stock["signal_source"] = "top_quantile_signal_score"
+        return stock
+
+    if "predicted_top_quantile_prob" in stock.columns:
+        stock["signal_score"] = pd.to_numeric(stock["predicted_top_quantile_prob"], errors="coerce")
+        stock["signal_rank"] = stock.groupby("trade_date")["signal_score"].rank(method="first", ascending=False)
+        stock["signal_source"] = "predicted_top_quantile_prob"
+        return stock
+
+    raise RuntimeError("个股预测表缺少 predicted_return_threshold_prob / predicted_up_prob / top_quantile_signal_score / predicted_top_quantile_prob")
+
+
+def build_stock_loss_risk_daily(loss_risk: pd.DataFrame) -> pd.DataFrame:
+    if loss_risk.empty:
+        return loss_risk
+    out = loss_risk.copy()
+    out["trade_date"] = pd.to_datetime(out["trade_date"], errors="coerce").dt.strftime("%Y-%m-%d")
+    out["symbol"] = normalize_symbol(out["symbol"])
+    keep_cols = ["trade_date", "symbol", "risk_5d_loss05_prob", "rank_by_loss05_risk", "loss_label_threshold"]
+    return out[[col for col in keep_cols if col in out.columns]].copy()
+
+
 def classify_market_regime(row: pd.Series) -> str:
     if row["weak_trend_count"] >= 2:
         return "弱势延续"
@@ -124,8 +212,19 @@ def enrich_with_feature_percentiles(stock: pd.DataFrame, feature: pd.DataFrame) 
         "range_pos_20",
         "market_up_ratio",
         "market_avg_pct_chg",
+        "market_ret_5_ge05_ratio",
+        "market_ret_5_le_neg05_ratio",
+        "market_near_limit_up_count",
         "industry_up_ratio",
         "industry_avg_pct_chg",
+        "industry_index_code",
+        "industry_index_level",
+        "industry_index_ret_5",
+        "industry_index_ret_20",
+        "industry_index_range_pos_20",
+        "industry_index_ret_5_xrank",
+        "stock_vs_industry_index_ret_5",
+        "stock_vs_industry_index_ret_20",
         "is_pre_holiday_3",
         "is_post_holiday_3",
         "pre_holiday_tday",
@@ -139,8 +238,52 @@ def enrich_with_feature_percentiles(stock: pd.DataFrame, feature: pd.DataFrame) 
     return stock.merge(feature, on=["trade_date", "symbol"], how="left", suffixes=("", "_feature"))
 
 
+def apply_industry_risk_adjustment(stock: pd.DataFrame) -> pd.DataFrame:
+    stock = stock.copy()
+    stock["industry_risk_adjustment"] = 0.0
+    stock["industry_risk_adjustment_reason"] = ""
+    if "predicted_industry_up_prob" not in stock.columns:
+        stock["industry_adjusted_signal_score"] = stock["signal_score"]
+        return stock
+
+    up_prob = pd.to_numeric(stock["predicted_industry_up_prob"], errors="coerce")
+    down_prob = pd.to_numeric(stock["predicted_industry_down_prob"], errors="coerce")
+    risk_level = stock.get("industry_risk_level", pd.Series(index=stock.index, dtype=object)).fillna("")
+    regime = stock.get("industry_regime", pd.Series(index=stock.index, dtype=object)).fillna("")
+    ret5_rank = pd.to_numeric(stock.get("industry_index_ret_5_xrank", pd.Series(index=stock.index)), errors="coerce")
+    stock_vs_ind5 = pd.to_numeric(stock.get("stock_vs_industry_index_ret_5", pd.Series(index=stock.index)), errors="coerce")
+
+    positive = (
+        (risk_level.eq("低风险") | regime.eq("行业顺风"))
+        & (up_prob >= 0.56)
+        & (ret5_rank.isna() | (ret5_rank >= 0.50))
+    )
+    negative = (
+        risk_level.eq("高风险")
+        | regime.isin(["行业弱势延续", "行业高位回落风险"])
+        | (down_prob >= 0.62)
+    )
+    isolated_strength = negative & (stock_vs_ind5 >= 0.08) & (stock["signal_score"] >= 0.62)
+
+    stock.loc[positive, "industry_risk_adjustment"] += 0.025
+    stock.loc[positive, "industry_risk_adjustment_reason"] = "行业顺风加分"
+    stock.loc[negative, "industry_risk_adjustment"] -= 0.045
+    stock.loc[negative, "industry_risk_adjustment_reason"] = "行业高风险扣分"
+    stock.loc[isolated_strength, "industry_risk_adjustment"] += 0.020
+    stock.loc[isolated_strength, "industry_risk_adjustment_reason"] = "弱行业中个股相对强，减轻扣分"
+
+    stock["industry_adjusted_signal_score"] = (stock["signal_score"] + stock["industry_risk_adjustment"]).clip(0, 1)
+    stock["raw_signal_score"] = stock["signal_score"]
+    stock["signal_score"] = stock["industry_adjusted_signal_score"]
+    stock["signal_rank"] = stock.groupby("trade_date")["signal_score"].rank(method="first", ascending=False)
+    return stock
+
+
 def candidate_flags(day: pd.DataFrame) -> pd.DataFrame:
     day = day.copy()
+    loss05_risk_prob = pd.to_numeric(day.get("risk_5d_loss05_prob", pd.Series(np.nan, index=day.index)), errors="coerce")
+    loss05_threshold = pd.to_numeric(day.get("loss05_risk_threshold", pd.Series(0.35, index=day.index)), errors="coerce").fillna(0.35)
+    loss05_high_risk = loss05_risk_prob.notna() & (loss05_risk_prob >= loss05_threshold)
     strong_momentum = (day["ret_5_pctile"] >= 0.9) | (day["ret_20_pctile"] >= 0.9)
     high_position = day["range_pos_20"] >= 0.8
     high_turnover = day["turnover_pct_pctile"] >= 0.9
@@ -153,6 +296,10 @@ def candidate_flags(day: pd.DataFrame) -> pd.DataFrame:
         (day["industry_up_ratio"] < 0.35)
         & (day["industry_avg_pct_chg"] < 0)
         & (day["pct_chg"] <= 0)
+    )
+    official_industry_high_risk = (
+        day.get("industry_risk_level", pd.Series(index=day.index, dtype=object)).eq("高风险")
+        | day.get("industry_regime", pd.Series(index=day.index, dtype=object)).isin(["行业弱势延续", "行业高位回落风险"])
     )
     volatility_with_industry_drag = (
         (day["volatility_5_pctile"] >= 0.95)
@@ -263,12 +410,12 @@ def candidate_flags(day: pd.DataFrame) -> pd.DataFrame:
         (day["market_up_ratio"] < 0.55)
         & (day["market_avg_pct_chg"] < 0.50)
         & (day["range_pos_20_pctile"] < 0.30)
-        & (day["top_quantile_signal_score"] < 0.70)
+        & (day["signal_score"] < 0.58)
     )
     high_risk_tail_chase_candidate = (
         day.get("aggregate_market_risk_level", pd.Series(index=day.index, dtype=object)).eq("高风险")
         & (day["market_high_risk_count"] >= 4)
-        & (day["rank_by_top_quantile_prob"] >= 3)
+        & (day["signal_rank"] >= 3)
         & (day["pct_chg"] >= 5)
         & (day["range_pos_20_pctile"] >= 0.85)
         & (day["ret_5_pctile"] >= 0.95)
@@ -280,14 +427,14 @@ def candidate_flags(day: pd.DataFrame) -> pd.DataFrame:
         & (day["pct_chg"] < 0)
     )
     backup_low_elastic_candidate = (
-        (day["rank_by_top_quantile_prob"] > 1)
-        & day["top_quantile_signal_score"].between(0.70, 0.705)
+        (day["signal_rank"] > 1)
+        & day["signal_score"].between(0.56, 0.58)
         & (day["market_up_ratio"] < 0.58)
         & (day["range_pos_20_pctile"] > 0.70)
     )
     low_turnover_spike_fade_candidate = (
-        (day["rank_by_top_quantile_prob"] > 1)
-        & (day["top_quantile_signal_score"] < 0.70)
+        (day["signal_rank"] > 1)
+        & (day["signal_score"] < 0.58)
         & (day["ret_5_pctile"] < 0.75)
         & (day["pct_chg"] > 5)
         & (day["turnover_pct_pctile"] < 0.40)
@@ -303,6 +450,7 @@ def candidate_flags(day: pd.DataFrame) -> pd.DataFrame:
     )
     day["is_overheat_candidate"] = ((high_turnover | high_volatility) & strong_momentum & high_position & ~industry_support).astype(int)
     day["is_weak_industry_candidate"] = weak_industry.astype(int)
+    day["is_official_industry_high_risk_candidate"] = official_industry_high_risk.astype(int)
     day["is_volatility_industry_drag_candidate"] = volatility_with_industry_drag.astype(int)
     day["is_medium_hot_short_broken_candidate"] = medium_hot_short_broken.astype(int)
     day["is_high_risk_intraday_break_candidate"] = high_risk_intraday_break.astype(int)
@@ -326,9 +474,11 @@ def candidate_flags(day: pd.DataFrame) -> pd.DataFrame:
     day["is_backup_low_elastic_candidate"] = backup_low_elastic_candidate.astype(int)
     day["is_low_turnover_spike_fade_candidate"] = low_turnover_spike_fade_candidate.astype(int)
     day["is_sharp_drop_rebound_candidate"] = sharp_drop_rebound_candidate.astype(int)
+    day["is_loss05_high_risk_candidate"] = loss05_high_risk.astype(int)
     day["is_fragile_candidate"] = (
         day["is_overheat_candidate"].eq(1)
         | day["is_weak_industry_candidate"].eq(1)
+        | day["is_official_industry_high_risk_candidate"].eq(1)
         | day["is_volatility_industry_drag_candidate"].eq(1)
         | day["is_medium_hot_short_broken_candidate"].eq(1)
         | day["is_high_risk_intraday_break_candidate"].eq(1)
@@ -352,136 +502,215 @@ def candidate_flags(day: pd.DataFrame) -> pd.DataFrame:
         | day["is_backup_low_elastic_candidate"].eq(1)
         | day["is_low_turnover_spike_fade_candidate"].eq(1)
         | day["is_sharp_drop_rebound_candidate"].eq(1)
+        | day["is_loss05_high_risk_candidate"].eq(1)
     ).astype(int)
+    if day.get("signal_source", pd.Series(index=day.index, dtype=object)).eq("direction_up_prob").any():
+        direction_fragile_cols = [
+            "is_high_risk_intraday_break_candidate",
+            "is_high_risk_limit_up_chase_candidate",
+            "is_breadth_divergence_chase_candidate",
+            "is_extreme_weak_market_extension_candidate",
+            "is_rebound_limit_up_volatility_candidate",
+            "is_high_risk_pullback_crowded_candidate",
+            "is_weak_market_weak_industry_down_candidate",
+            "is_sharp_drop_rebound_candidate",
+            "is_loss05_high_risk_candidate",
+        ]
+        day["is_fragile_candidate"] = day[direction_fragile_cols].any(axis=1).astype(int)
     return day
 
 
-def decide_action(day: pd.DataFrame, args: argparse.Namespace) -> tuple[str, int, str]:
-    top = day.sort_values("rank_by_top_quantile_prob").head(args.max_top_n).copy()
-    scores = top["top_quantile_signal_score"].tolist()
-    if not scores or scores[0] < args.min_top1_score:
-        return "不出手", 0, "Top1分数不足"
+def _day_float(day: pd.DataFrame, col: str) -> float:
+    if col not in day.columns or day.empty:
+        return np.nan
+    return float(pd.to_numeric(day[col].iloc[0], errors="coerce"))
 
-    market_up_ratio = float(top["market_up_ratio"].iloc[0]) if "market_up_ratio" in top else np.nan
-    market_avg_pct_chg = float(top["market_avg_pct_chg"].iloc[0]) if "market_avg_pct_chg" in top else np.nan
-    market_avg_up_prob = float(top["market_avg_up_prob"].iloc[0]) if "market_avg_up_prob" in top else np.nan
-    market_regime = top["aggregate_market_regime"].iloc[0]
-    market_risk_level = top["aggregate_market_risk_level"].iloc[0]
-    market_fragile = (
-        market_regime == "弱势延续"
-        or (market_regime == "高位回落" and pd.notna(market_up_ratio) and market_up_ratio < 0.35)
-        or (pd.notna(market_up_ratio) and market_up_ratio < 0.30)
-        or (pd.notna(market_avg_pct_chg) and market_avg_pct_chg < -1.0)
+
+def classify_market_opportunity(day: pd.DataFrame) -> tuple[str, str]:
+    market_up_ratio = _day_float(day, "market_up_ratio")
+    market_avg_pct_chg = _day_float(day, "market_avg_pct_chg")
+    market_ret_5_ge05_ratio = _day_float(day, "market_ret_5_ge05_ratio")
+    market_ret_5_le_neg05_ratio = _day_float(day, "market_ret_5_le_neg05_ratio")
+    market_avg_up_prob = _day_float(day, "market_avg_up_prob")
+    market_avg_down_prob = _day_float(day, "market_avg_down_prob")
+    market_high_risk_count = int(_day_float(day, "market_high_risk_count") or 0)
+    regime = day["aggregate_market_regime"].iloc[0] if "aggregate_market_regime" in day.columns and not day.empty else "中性"
+    risk_level = day["aggregate_market_risk_level"].iloc[0] if "aggregate_market_risk_level" in day.columns and not day.empty else "中风险"
+
+    breadth_crash = (
+        (pd.notna(market_up_ratio) and market_up_ratio < 0.28)
+        or (pd.notna(market_avg_pct_chg) and market_avg_pct_chg <= -1.00)
     )
-    fragile_count = int(top["is_fragile_candidate"].sum())
-    weak_industry_count = int(top["is_weak_industry_candidate"].sum())
-    eligible = top.loc[top["is_fragile_candidate"].eq(0)].copy()
-    is_pre_holiday = int(top.get("is_pre_holiday_3", pd.Series([0])).iloc[0] or 0) == 1
-    is_post_holiday = int(top.get("is_post_holiday_3", pd.Series([0])).iloc[0] or 0) == 1
-    holiday_gap_days = float(top.get("holiday_gap_days", pd.Series([0])).iloc[0] or 0)
+    model_high_risk_confirmed = (
+        (risk_level == "高风险" or regime in {"弱势延续", "高位回落"} or market_high_risk_count >= 4)
+        and (
+            (pd.notna(market_up_ratio) and market_up_ratio < 0.45)
+            or (pd.notna(market_avg_pct_chg) and market_avg_pct_chg < 0)
+            or (pd.notna(market_ret_5_le_neg05_ratio) and market_ret_5_le_neg05_ratio >= 0.28)
+        )
+    )
+    if (
+        breadth_crash
+        or model_high_risk_confirmed
+        or (pd.notna(market_avg_down_prob) and market_avg_down_prob >= 0.65 and pd.notna(market_avg_pct_chg) and market_avg_pct_chg < 0)
+    ):
+        return "E高风险", "市场高风险"
 
-    if eligible.empty:
-        return "不出手", 0, "Top候选全部脆弱"
-    if is_post_holiday and holiday_gap_days >= 7 and pd.notna(market_up_ratio) and market_up_ratio < 0.65:
-        return "不出手", 0, "长假节后市场宽度不足"
-    if is_pre_holiday and top["aggregate_market_risk_level"].iloc[0] == "高风险" and market_regime == "超跌反弹":
-        return "不出手", 0, "节前高风险超跌反弹不追"
-    eligible_scores = eligible["top_quantile_signal_score"].tolist()
     if (
-        market_risk_level == "高风险"
-        and market_regime == "高位回落"
-        and int(top["high_position_reversal_risk_count"].iloc[0]) >= 5
+        (risk_level == "中风险" and pd.notna(market_up_ratio) and market_up_ratio < 0.55)
+        or (risk_level == "高风险" and regime == "高位回落")
+        or (market_high_risk_count >= 2 and pd.notna(market_avg_pct_chg) and market_avg_pct_chg < 0.30)
+        or (pd.notna(market_up_ratio) and market_up_ratio < 0.40)
+        or (pd.notna(market_avg_pct_chg) and market_avg_pct_chg < -0.20)
+        or (pd.notna(market_ret_5_le_neg05_ratio) and market_ret_5_le_neg05_ratio >= 0.25)
+        or (pd.notna(market_avg_down_prob) and market_avg_down_prob >= 0.58 and pd.notna(market_avg_pct_chg) and market_avg_pct_chg < 0.30)
     ):
-        return "不出手", 0, "全市场高位回落风险"
-    if (
-        market_risk_level == "高风险"
-        and market_regime == "超跌反弹"
-        and int(top["exhausted_rebound_risk_count"].iloc[0]) >= 6
-    ):
-        return "不出手", 0, "全市场超跌反弹衰竭风险"
-    if (
-        market_risk_level == "高风险"
-        and market_regime == "高位回落"
-        and pd.notna(market_up_ratio)
-        and market_up_ratio < 0.60
-    ):
-        return "不出手", 0, "高风险高位回落且市场宽度不足"
-    if market_risk_level == "高风险" and market_regime == "超跌反弹":
-        return "Top1", 1, "高风险超跌反弹，只保留最强Top1"
-    if (
-        market_risk_level == "中风险"
-        and float(top["market_avg_down_prob"].iloc[0]) >= 0.58
-        and pd.notna(market_avg_pct_chg)
-        and market_avg_pct_chg < 0
-    ):
-        return "不出手", 0, "中风险且市场下跌概率偏高"
-    if (
-        market_risk_level == "中风险"
+        return "D偏弱", "市场偏弱"
+
+    strong_market = (
+        risk_level == "低风险"
         and pd.notna(market_up_ratio)
         and pd.notna(market_avg_pct_chg)
-        and market_up_ratio < 0.50
-        and market_avg_pct_chg < 0.50
-    ):
-        return "不出手", 0, "中风险且市场宽度不足"
-    if (
-        int(top["anchor_stock_count"].iloc[0]) < 215
-        and int(top["market_high_risk_count"].iloc[0]) >= 2
-        and pd.notna(market_avg_pct_chg)
-        and market_avg_pct_chg > 0
-    ):
-        return "不出手", 0, "低覆盖股票池下高风险假强反弹"
-    if (
-        is_post_holiday
-        and pd.notna(market_up_ratio)
-        and pd.notna(market_avg_pct_chg)
-        and market_up_ratio >= 0.70
-        and market_avg_pct_chg >= 1.0
-        and len(eligible_scores) >= 2
-        and eligible_scores[1] >= 0.63
-    ):
-        return "Top2", min(2, args.max_top_n), "节后强修复允许Top2"
-    if fragile_count >= 2 and market_fragile:
-        return "不出手", 0, "市场脆弱且候选股风险过多"
-    if weak_industry_count >= 2:
-        return "不出手", 0, "候选股行业弱势过多"
-    if market_fragile:
-        return "Top1", 1, "市场风险偏高，只保留Top1"
-    if market_risk_level == "高风险":
-        return "Top1", 1, "高风险市场，只保留最强合格Top1"
-    if pd.notna(market_avg_up_prob) and market_avg_up_prob < 0.45:
-        return "Top1", 1, "市场上涨概率不足，不放Top2"
+        and market_up_ratio >= 0.65
+        and market_avg_pct_chg >= 0.80
+        and (pd.isna(market_ret_5_le_neg05_ratio) or market_ret_5_le_neg05_ratio <= 0.18)
+        and (pd.isna(market_avg_up_prob) or market_avg_up_prob >= 0.50)
+    )
+    if strong_market:
+        return "A强机会", "市场强机会"
 
-    if len(eligible_scores) >= 3 and eligible_scores[2] >= args.min_top3_score:
-        return "Top3", min(3, args.max_top_n), "合格候选允许Top3"
-    if len(eligible_scores) >= 2 and eligible_scores[1] >= args.min_top2_score:
-        return "Top2", min(2, args.max_top_n), "合格候选Top2分数达标"
-    if len(eligible_scores) >= 2 and scores[0] - scores[min(len(scores), 3) - 1] <= 0.03:
-        return "Top2", min(2, args.max_top_n), "Top分数接近，分散到Top2"
-    return "Top1", 1, "只保留Top1"
+    positive_market = (
+        (
+            (pd.notna(market_up_ratio) and market_up_ratio >= 0.55 and pd.notna(market_avg_pct_chg) and market_avg_pct_chg >= -0.10)
+            or (pd.notna(market_avg_up_prob) and market_avg_up_prob >= 0.52)
+            or (pd.notna(market_ret_5_ge05_ratio) and market_ret_5_ge05_ratio >= 0.18)
+        )
+        and regime != "高位回落"
+        and not (risk_level == "高风险" and pd.notna(market_up_ratio) and market_up_ratio < 0.50)
+    )
+    if positive_market:
+        return "B偏强", "市场偏强"
+
+    return "C中性", "市场中性"
 
 
-def build_signals(stock: pd.DataFrame, market_daily: pd.DataFrame, args: argparse.Namespace) -> pd.DataFrame:
+def add_market_opportunity_diagnostics(day: pd.DataFrame) -> pd.DataFrame:
+    day = day.copy()
+    market_level, market_reason = classify_market_opportunity(day)
+    day["market_opportunity_level"] = market_level
+    day["market_opportunity_reason"] = market_reason
+    market_adjustment = {
+        "A强机会": 0.030,
+        "B偏强": 0.015,
+        "C中性": 0.000,
+        "D偏弱": -0.040,
+        "E高风险": -0.090,
+    }.get(market_level, 0.0)
+    day["market_style_adjustment"] = market_adjustment
+    return day
+
+
+def apply_market_signal_correction(day: pd.DataFrame) -> pd.DataFrame:
+    day = day.copy()
+    day["candidate_risk_adjustment"] = 0.0
+    day["candidate_risk_reason"] = ""
+
+    risk_rules = [
+        ("is_fragile_candidate", -0.060, "脆弱候选"),
+        ("is_overheat_candidate", -0.035, "过热"),
+        ("is_high_risk_intraday_break_candidate", -0.050, "高风险日破位"),
+        ("is_breadth_divergence_chase_candidate", -0.050, "弱宽度追高"),
+        ("is_crowded_intraday_break_candidate", -0.045, "拥挤破位"),
+        ("is_extreme_momentum_extension_candidate", -0.040, "极端动量延伸"),
+        ("is_rebound_crowded_chase_candidate", -0.040, "反弹拥挤追高"),
+        ("is_sharp_drop_rebound_candidate", -0.035, "急跌反弹不确认"),
+        ("is_loss05_high_risk_candidate", -0.050, "亏损风险高"),
+    ]
+    for col, penalty, reason in risk_rules:
+        if col not in day.columns:
+            continue
+        mask = day[col].eq(1)
+        day.loc[mask, "candidate_risk_adjustment"] += penalty
+        day.loc[mask, "candidate_risk_reason"] = day.loc[mask, "candidate_risk_reason"].map(
+            lambda value: f"{value};{reason}" if value else reason
+        )
+
+    day["market_corrected_signal_score"] = (
+        pd.to_numeric(day["signal_score"], errors="coerce").fillna(0)
+        + day["market_style_adjustment"]
+        + day["candidate_risk_adjustment"]
+    ).clip(lower=0, upper=1)
+    day["market_corrected_rank"] = day["market_corrected_signal_score"].rank(method="first", ascending=False)
+    day["signal_score_before_market_correction"] = day["signal_score"]
+    day["signal_score"] = day["market_corrected_signal_score"]
+    day["signal_rank"] = day["market_corrected_rank"]
+    return day
+
+
+def decide_action(day: pd.DataFrame, args: argparse.Namespace) -> tuple[str, int, str, str, int, str]:
+    top = day.sort_values("signal_rank").head(args.max_top_n).copy()
+    market_level = top["market_opportunity_level"].iloc[0] if "market_opportunity_level" in top and not top.empty else "C中性"
+    market_reason = top["market_opportunity_reason"].iloc[0] if "market_opportunity_reason" in top and not top.empty else "市场中性"
+    if top.empty:
+        return "不出手", 0, "无候选股票", market_level, args.max_top_n, market_reason
+
+    best_score = float(pd.to_numeric(top["market_corrected_signal_score"].iloc[0], errors="coerce"))
+    fragile_top = int(top.head(3)["is_fragile_candidate"].sum()) if "is_fragile_candidate" in top.columns else 0
+
+    if market_level == "E高风险":
+        return "不出手", 0, f"{market_level}：市场风险过高", market_level, 0, market_reason
+    if market_level == "D偏弱":
+        if best_score >= 0.30 and fragile_top < 3:
+            return "Top1", 1, f"{market_level}：只允许最强1只", market_level, 1, market_reason
+        return "不出手", 0, f"{market_level}：无足够强候选", market_level, 0, market_reason
+    if market_level == "C中性":
+        signal_count = min(2, len(top))
+        return f"Top{signal_count}", signal_count, f"{market_level}：中性市场降为Top{signal_count}", market_level, signal_count, market_reason
+
+    signal_count = min(args.max_top_n, len(top))
+    action = f"Top{signal_count}" if signal_count < 3 else "Top3"
+    return action, signal_count, f"{market_level}：允许{action}", market_level, signal_count, market_reason
+
+
+def build_signals(
+    stock: pd.DataFrame,
+    market_daily: pd.DataFrame,
+    industry_daily: pd.DataFrame | None,
+    loss_risk_daily: pd.DataFrame | None,
+    args: argparse.Namespace,
+) -> pd.DataFrame:
     out = stock.merge(market_daily, on="trade_date", how="left")
     if out["aggregate_market_risk_level"].isna().any():
         missing = sorted(out.loc[out["aggregate_market_risk_level"].isna(), "trade_date"].dropna().unique())
         raise RuntimeError(f"市场预测缺少这些日期: {missing[:10]}")
+    if industry_daily is not None and not industry_daily.empty:
+        out = out.merge(industry_daily, on=["trade_date", "industry"], how="left")
+    if loss_risk_daily is not None and not loss_risk_daily.empty:
+        out = out.merge(loss_risk_daily, on=["trade_date", "symbol"], how="left")
+    out = apply_industry_risk_adjustment(out)
+    out["risk_5d_loss05_prob"] = pd.to_numeric(out.get("risk_5d_loss05_prob", np.nan), errors="coerce")
+    out["loss05_risk_threshold"] = args.max_loss05_risk
+    out["final_top3_score"] = out["signal_score"] * (1 - out["risk_5d_loss05_prob"].fillna(0)).clip(lower=0, upper=1)
+    has_loss_risk = out["risk_5d_loss05_prob"].notna()
+    out.loc[has_loss_risk, "signal_score"] = out.loc[has_loss_risk, "final_top3_score"]
+    out["signal_rank"] = out.groupby("trade_date")["signal_score"].rank(method="first", ascending=False)
 
     frames: list[pd.DataFrame] = []
     for trade_date, day in out.groupby("trade_date", sort=True):
         day = candidate_flags(day)
-        action, signal_count, reason = decide_action(day, args)
-        day = day.sort_values("rank_by_top_quantile_prob").copy()
-        day["signal_eligible_rank"] = np.nan
-        eligible_index = day.loc[day["is_fragile_candidate"].eq(0)].index
-        day.loc[eligible_index, "signal_eligible_rank"] = np.arange(1, len(eligible_index) + 1)
+        day = add_market_opportunity_diagnostics(day)
+        day = apply_market_signal_correction(day)
+        action, signal_count, reason, market_level, market_limit, market_reason = decide_action(day, args)
+        day = day.sort_values("signal_rank").copy()
+        day["signal_eligible_rank"] = np.arange(1, len(day) + 1)
         day["signal_action"] = action
         day["signal_count"] = signal_count
         day["signal_reason"] = reason
-        day["final_signal_rank"] = day["rank_by_top_quantile_prob"]
-        day["is_final_signal"] = (
-            day["signal_eligible_rank"].notna()
-            & (day["signal_eligible_rank"] <= signal_count)
-        ).astype(int)
+        day["market_opportunity_level"] = market_level
+        day["market_action_limit"] = market_limit
+        day["market_opportunity_reason"] = market_reason
+        day["final_signal_rank"] = day["signal_rank"]
+        day["is_final_signal"] = (day["signal_eligible_rank"] <= signal_count).astype(int)
         frames.append(day)
     return pd.concat(frames, ignore_index=True)
 
@@ -490,23 +719,25 @@ def main() -> None:
     args = parse_args()
     stock_path = Path(args.stock_prediction).resolve()
     market_path = Path(args.market_prediction).resolve()
+    industry_path = Path(args.industry_prediction).resolve() if args.industry_prediction else None
+    loss_risk_path = Path(args.stock_loss_risk_prediction).resolve() if args.stock_loss_risk_prediction else None
     feature_path = Path(args.stock_feature_file).resolve()
     output_dir = Path(args.output_dir).resolve()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     stock = read_csv(stock_path)
     market = read_csv(market_path)
+    industry = read_csv(industry_path) if industry_path else pd.DataFrame()
+    loss_risk = read_csv(loss_risk_path) if loss_risk_path else pd.DataFrame()
     feature = read_csv(feature_path)
 
-    if "top_quantile_signal_score" not in stock.columns:
-        if "predicted_top_quantile_prob" in stock.columns:
-            stock["top_quantile_signal_score"] = pd.to_numeric(stock["predicted_top_quantile_prob"], errors="coerce")
-        else:
-            raise RuntimeError("个股预测表缺少 top_quantile_signal_score 或 predicted_top_quantile_prob")
+    stock = normalize_stock_signal_columns(stock)
 
     stock = enrich_with_feature_percentiles(stock, feature)
     market_daily = build_market_daily(market)
-    result = build_signals(stock, market_daily, args)
+    industry_daily = build_industry_daily(industry) if not industry.empty else None
+    loss_risk_daily = build_stock_loss_risk_daily(loss_risk) if not loss_risk.empty else None
+    result = build_signals(stock, market_daily, industry_daily, loss_risk_daily, args)
 
     range_tag = date_range_tag(stock_path)
     output_path = output_dir / output_name(range_tag)
