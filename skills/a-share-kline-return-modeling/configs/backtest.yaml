@@ -1,0 +1,52 @@
+# V1 backtest and execution protocol.
+signal_time: after_close
+feature_cutoff_time: close
+
+primary_entry_price_type: open
+primary_exit_price_type: open
+benchmark_entry_price_type: vwap
+benchmark_exit_price_type: vwap
+holding_trade_days: 5
+
+commission_rate: 0.0003
+stamp_tax_rate: 0.001
+transfer_fee_rate: 0.00001
+min_commission_enabled: false
+min_commission: 5.0
+buy_slippage_rate: 0.0005
+sell_slippage_rate: 0.0005
+
+min_listing_days: 60
+min_amount: 30000000
+min_avg_amount_5: 30000000
+max_position_per_stock: 0.34
+max_picks_per_industry: 2
+
+replace_unfilled_entry: false
+allow_exit_delay: true
+
+stock_list_path: skills/a-share-kline-return-modeling/data/00_股票清单.csv
+stock_daily_k_dir: skills/a-share-data-fetching/data/单只股票日k
+stock_features_output_path: skills/a-share-kline-return-modeling/data/clean_stock_features.csv
+market_features_output_path: skills/a-share-kline-return-modeling/data/clean_market_features.csv
+data_quality_report_path: skills/a-share-kline-return-modeling/outputs/evaluation/data_quality_report.md
+build_summary_output_path: skills/a-share-kline-return-modeling/outputs/evaluation/build_features_summary.json
+
+price_adjustment_type: forward_adjusted_for_features
+execution_price_type: raw_or_equivalent_trade_price
+limit_price_source: raw_price_or_provider_limit_fields
+amount_volume_adjustment_type: raw
+
+signal_known_feature_policy:
+  allow_t_close_fields: true
+  forbid_t_plus_1_execution_fields: true
+
+execution_policy:
+  entry_no_fill_action: skip
+  exit_no_fill_action: delay_until_sellable
+
+portfolio_policy:
+  max_new_positions_per_day: 3
+  daily_new_capital_fraction: 0.2
+  max_gross_exposure: 1.0
+  idle_cash_return: 0.0

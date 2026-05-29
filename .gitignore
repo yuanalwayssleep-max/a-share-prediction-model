@@ -7,3 +7,12 @@ __pycache__/
 .DS_Store
 outputs/
 skills/a-share-kline-return-modeling/outputs/
+skills/a-share-kline-return-modeling/data/clean_*.csv
+skills/a-share-kline-return-modeling/data/industry_features.csv
+
+!skills/a-share-kline-return-modeling/configs/
+!skills/a-share-kline-return-modeling/configs/backtest.yaml
+!skills/a-share-kline-return-modeling/tests/
+!skills/a-share-kline-return-modeling/tests/**
+!skills/a-share-kline-return-modeling/samples/
+!skills/a-share-kline-return-modeling/samples/**
