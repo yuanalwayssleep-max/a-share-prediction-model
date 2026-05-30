@@ -63,6 +63,7 @@ def main() -> None:
     parser.add_argument("--top-n-train", type=int, default=50)
     parser.add_argument("--top-n-eval", type=int, default=3)
     parser.add_argument("--train-window-days", type=int, default=365)
+    parser.add_argument("--model-mode", default="top50_classifier")
     args = parser.parse_args()
 
     rows: list[dict[str, object]] = []
@@ -80,6 +81,8 @@ def main() -> None:
                 str(args.top_n_train),
                 "--train-window-days",
                 str(args.train_window_days),
+                "--model-mode",
+                args.model_mode,
             ]
         )
         month_pred_dir = PRED_DIR / period

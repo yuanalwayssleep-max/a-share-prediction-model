@@ -74,13 +74,18 @@ def load_config(path: Path) -> dict[str, Any]:
 
     try:
         import yaml  # type: ignore
+    except ImportError:
+        yaml = None
 
-        loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-        if isinstance(loaded, dict):
-            config.update(loaded)
+    if yaml is not None:
+        try:
+            loaded = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError as exc:  # type: ignore[attr-defined]
+            raise ValueError(f"Failed to parse YAML config {path}: {exc}") from exc
+        if not isinstance(loaded, dict):
+            raise ValueError(f"Config {path} must contain a mapping at top level.")
+        config.update(loaded)
         return config
-    except Exception:
-        pass
 
     current_parent: str | None = None
     for raw_line in path.read_text(encoding="utf-8").splitlines():
@@ -351,7 +356,25 @@ def add_future_labels(df: pd.DataFrame, calendar: list[pd.Timestamp], config: di
     return out
 
 
-def build_market_features(stock_df: pd.DataFrame) -> pd.DataFrame:
+MARKET_TRUTH_COLUMNS = [
+    "future_market_10pct_density",
+    "market_top5pct_avg_return",
+    "market_top30_avg_return",
+    "market_positive_ratio",
+    "market_extreme_return_density_5pct",
+    "market_extreme_return_density_10pct",
+    "market_opportunity_label",
+]
+
+
+def split_market_signal_truth(market: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    truth_cols = ["trade_date"] + [col for col in MARKET_TRUTH_COLUMNS if col in market.columns]
+    signal = market.drop(columns=[col for col in MARKET_TRUTH_COLUMNS if col in market.columns]).copy()
+    truth = market[truth_cols].copy()
+    return signal, truth
+
+
+def build_market_features(stock_df: pd.DataFrame, config: dict[str, Any]) -> pd.DataFrame:
     market = (
         stock_df.groupby("trade_date")
         .agg(
@@ -371,8 +394,9 @@ def build_market_features(stock_df: pd.DataFrame) -> pd.DataFrame:
         .reset_index()
         .sort_values("trade_date")
     )
-    market["market_10pct_density_ma5_lag1"] = market["future_market_10pct_density"].shift(1).rolling(5).mean()
-    market["market_10pct_density_ma10_lag1"] = market["future_market_10pct_density"].shift(1).rolling(10).mean()
+    label_known_lag = int(config.get("holding_trade_days", 5)) + 1
+    market["market_10pct_density_ma5_lag1"] = market["future_market_10pct_density"].shift(label_known_lag).rolling(5).mean()
+    market["market_10pct_density_ma10_lag1"] = market["future_market_10pct_density"].shift(label_known_lag).rolling(10).mean()
     q40 = market["future_market_10pct_density"].expanding().quantile(0.4).shift(1)
     q70 = market["future_market_10pct_density"].expanding().quantile(0.7).shift(1)
     market["market_opportunity_label"] = 1
@@ -452,13 +476,20 @@ def main() -> None:
     featured = add_cross_section_features(featured)
     calendar = build_trade_calendar(featured)
     stock_features = add_future_labels(featured, calendar, config)
-    market_features = build_market_features(stock_features)
+    market_features = build_market_features(stock_features, config)
+    market_signal_features, market_truth_labels = split_market_signal_truth(market_features)
 
     output_dir.mkdir(parents=True, exist_ok=True)
     stock_output = Path(config.get("stock_features_output_path", output_dir / "clean_stock_features.csv"))
     market_output = Path(config.get("market_features_output_path", output_dir / "clean_market_features.csv"))
+    market_signal_output = Path(
+        config.get("market_signal_features_output_path", output_dir / "market_signal_features.csv")
+    )
+    market_truth_output = Path(config.get("market_truth_labels_output_path", output_dir / "market_truth_labels.csv"))
     stock_features.to_csv(stock_output, index=False, encoding="utf-8-sig")
     market_features.to_csv(market_output, index=False, encoding="utf-8-sig")
+    market_signal_features.to_csv(market_signal_output, index=False, encoding="utf-8-sig")
+    market_truth_labels.to_csv(market_truth_output, index=False, encoding="utf-8-sig")
 
     report_path = Path(config.get("data_quality_report_path", "skills/a-share-kline-return-modeling/outputs/evaluation/data_quality_report.md"))
     write_quality_report(stock_features, market_features, report_path, config)
@@ -471,6 +502,8 @@ def main() -> None:
                 "market_rows": len(market_features),
                 "stock_output": str(stock_output),
                 "market_output": str(market_output),
+                "market_signal_output": str(market_signal_output),
+                "market_truth_output": str(market_truth_output),
                 "data_quality_report": str(report_path),
                 "signal_known_features": get_signal_known_features(stock_features),
                 "forbidden_prefixes": MODEL_FORBIDDEN_PREFIXES,
@@ -484,6 +517,8 @@ def main() -> None:
     )
     print(f"wrote {stock_output}")
     print(f"wrote {market_output}")
+    print(f"wrote {market_signal_output}")
+    print(f"wrote {market_truth_output}")
     print(f"wrote {report_path}")
 
 

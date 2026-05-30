@@ -16,6 +16,7 @@ DEFAULT_OUTPUT_DIR = Path("skills/a-share-kline-return-modeling/outputs/evaluati
 
 RERANK_FEATURES = [
     "rank_strength_score",
+    "rank_secondary_score",
     "amount_ratio_5",
     "ret_5",
     "ret_20",

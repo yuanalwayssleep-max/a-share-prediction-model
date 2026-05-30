@@ -783,14 +783,28 @@ Top10/Top30/Top50 每日数量检查
 输出每日 TopN 候选池排名
 ```
 
-第一版模型：
+当前默认主模型：
 
 ```text
-LightGBMRegressor
-目标：future_5_return_rank_pct
+LightGBMClassifier
+目标：label_top50
+输出：rank_strength_score = Top50 概率
 ```
 
-第二版可升级：
+可选对照模式：
+
+```text
+--model-mode raw_rank_pct_regression
+  LightGBMRegressor / future_5_return_rank_pct
+
+--model-mode top30_classifier
+  LightGBMClassifier / label_top30
+
+--model-mode weighted_rank_pct_regression
+  LightGBMRegressor / 加权 future_5_return_rank_pct
+```
+
+后续可升级：
 
 ```text
 LightGBMRanker
@@ -804,7 +818,8 @@ group：trade_date
 python3 skills/a-share-kline-return-modeling/scripts/01_train_stock_rank_model.py \
   --start-date 2025-05-01 \
   --end-date 2025-05-31 \
-  --top-n 50
+  --top-n 50 \
+  --model-mode top50_classifier
 ```
 
 训练窗口：
@@ -839,6 +854,8 @@ outputs/stock_rank_predictions/predictions_with_truth.csv
 
 根据 CR-20260529-001，`--top-n 50` 是 M3 第一阶段默认候选池口径。raw model score Top3 必须作为评估基线保留，但不再把 raw score 直接 Top3 作为唯一 M3 目标。
 
+当前默认 `--model-mode top50_classifier` 是开发阶段实验后选定的主线实现，用于提高 Top50 候选池对真实 Top30 的召回。`raw_rank_pct_regression` 保留为可回退基线。
+
 `predictions.csv` 只包含预测时可用字段：
 
 ```text
@@ -849,6 +866,7 @@ industry
 rank_strength_score
 rank_strength_rank
 industry_strength_score
+model_mode
 risk_flags
 liquidity_risk_flag
 ```

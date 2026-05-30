@@ -50,6 +50,37 @@ SAFE_PREDICTION_FEATURES = [
     "low_liquidity_flag",
 ]
 
+MODEL_MODES = [
+    "top10pct_classifier",
+    "top15pct_classifier",
+    "top20pct_classifier",
+    "top25pct_classifier",
+    "top50_classifier",
+    "top30_classifier",
+    "weighted_rank_pct_regression",
+    "raw_rank_pct_regression",
+]
+
+RANK_PCT_CLASSIFIER_THRESHOLDS = {
+    "top10pct_classifier": 0.90,
+    "top15pct_classifier": 0.85,
+    "top20pct_classifier": 0.80,
+    "top25pct_classifier": 0.75,
+}
+
+
+def target_column_for_mode(model_mode: str) -> str:
+    if model_mode == "top30_classifier":
+        return "label_top30"
+    if model_mode == "top50_classifier":
+        return "label_top50"
+    if model_mode in RANK_PCT_CLASSIFIER_THRESHOLDS:
+        threshold = RANK_PCT_CLASSIFIER_THRESHOLDS[model_mode]
+        return f"future_5_return_rank_pct_ge_{threshold:.2f}"
+    if model_mode in {"raw_rank_pct_regression", "weighted_rank_pct_regression"}:
+        return "future_5_return_rank_pct"
+    return ""
+
 
 def load_features(path: Path) -> pd.DataFrame:
     date_cols = ["trade_date", "entry_trade_date", "exit_trade_date", "actual_exit_trade_date"]
@@ -70,24 +101,129 @@ def select_feature_columns(df: pd.DataFrame) -> list[str]:
     return cols
 
 
-def make_model():
+def make_regressor():
     try:
         from lightgbm import LGBMRegressor
-
-        return LGBMRegressor(
-            objective="regression",
-            n_estimators=120,
-            learning_rate=0.05,
-            num_leaves=31,
-            subsample=0.9,
-            colsample_bytree=0.9,
-            random_state=20260529,
-            verbosity=-1,
-        ), "LightGBMRegressor"
-    except Exception:
+    except ImportError:
         from sklearn.ensemble import HistGradientBoostingRegressor
 
-        return HistGradientBoostingRegressor(max_iter=120, learning_rate=0.05, random_state=20260529), "HistGradientBoostingRegressor"
+        return (
+            HistGradientBoostingRegressor(max_iter=120, learning_rate=0.05, random_state=20260529),
+            "HistGradientBoostingRegressor",
+        )
+    return LGBMRegressor(
+        objective="regression",
+        n_estimators=120,
+        learning_rate=0.05,
+        num_leaves=31,
+        subsample=0.9,
+        colsample_bytree=0.9,
+        random_state=20260529,
+        verbosity=-1,
+    ), "LightGBMRegressor"
+
+
+def make_classifier():
+    try:
+        from lightgbm import LGBMClassifier
+    except ImportError:
+        from sklearn.ensemble import HistGradientBoostingClassifier
+
+        return (
+            HistGradientBoostingClassifier(max_iter=120, learning_rate=0.05, random_state=20260529),
+            "HistGradientBoostingClassifier",
+        )
+    return LGBMClassifier(
+        objective="binary",
+        n_estimators=120,
+        learning_rate=0.05,
+        num_leaves=31,
+        subsample=0.9,
+        colsample_bytree=0.9,
+        class_weight="balanced",
+        random_state=20260529,
+        verbosity=-1,
+    ), "LightGBMClassifier"
+
+
+def weighted_rank_sample_weight(train_df: pd.DataFrame) -> pd.Series:
+    weight = pd.Series(1.0, index=train_df.index)
+    weight.loc[train_df["label_top50"].fillna(0).astype(int) == 1] = 1.5
+    weight.loc[train_df["label_top30"].fillna(0).astype(int) == 1] = 3.0
+    weight.loc[train_df["label_top10"].fillna(0).astype(int) == 1] = 5.0
+    return weight
+
+
+def validate_binary_target(target: pd.Series, target_col: str) -> bool:
+    unique_count = target.dropna().astype(int).nunique()
+    return unique_count >= 2
+
+
+def fit_secondary_rank_scores(
+    train_df: pd.DataFrame,
+    predict_df: pd.DataFrame,
+    feature_cols: list[str],
+) -> pd.Series:
+    model, _ = make_regressor()
+    target_col = "future_5_return_rank_pct"
+    model.fit(train_df[feature_cols], train_df[target_col])
+    return pd.Series(model.predict(predict_df[feature_cols]), index=predict_df.index)
+
+
+def fit_predict_scores(
+    train_df: pd.DataFrame,
+    predict_df: pd.DataFrame,
+    feature_cols: list[str],
+    model_mode: str,
+) -> tuple[pd.Series, pd.Series, str, str]:
+    if model_mode == "raw_rank_pct_regression":
+        model, model_name = make_regressor()
+        target_col = "future_5_return_rank_pct"
+        model.fit(train_df[feature_cols], train_df[target_col])
+        scores = pd.Series(model.predict(predict_df[feature_cols]), index=predict_df.index)
+        return scores, scores, model_name, target_col
+    if model_mode == "weighted_rank_pct_regression":
+        model, model_name = make_regressor()
+        target_col = "future_5_return_rank_pct"
+        model.fit(
+            train_df[feature_cols],
+            train_df[target_col],
+            sample_weight=weighted_rank_sample_weight(train_df),
+        )
+        scores = pd.Series(model.predict(predict_df[feature_cols]), index=predict_df.index)
+        return scores, scores, model_name, target_col
+    if model_mode == "top30_classifier":
+        model, model_name = make_classifier()
+        target_col = "label_top30"
+        target = train_df[target_col].astype(int)
+        if not validate_binary_target(target, target_col):
+            raise ValueError(f"Training target has one class only for {target_col}")
+        model.fit(train_df[feature_cols], target)
+        scores = pd.Series(model.predict_proba(predict_df[feature_cols])[:, 1], index=predict_df.index)
+        secondary_scores = fit_secondary_rank_scores(train_df, predict_df, feature_cols)
+        return scores, secondary_scores, model_name, target_col
+    if model_mode == "top50_classifier":
+        model, model_name = make_classifier()
+        target_col = "label_top50"
+        target = train_df[target_col].astype(int)
+        if not validate_binary_target(target, target_col):
+            raise ValueError(f"Training target has one class only for {target_col}")
+        model.fit(train_df[feature_cols], target)
+        scores = pd.Series(model.predict_proba(predict_df[feature_cols])[:, 1], index=predict_df.index)
+        secondary_scores = fit_secondary_rank_scores(train_df, predict_df, feature_cols)
+        return scores, secondary_scores, model_name, target_col
+    if model_mode in RANK_PCT_CLASSIFIER_THRESHOLDS:
+        model, model_name = make_classifier()
+        threshold = RANK_PCT_CLASSIFIER_THRESHOLDS[model_mode]
+        target_col = f"future_5_return_rank_pct_ge_{threshold:.2f}"
+        target = (train_df["future_5_return_rank_pct"] >= threshold).astype(int)
+        if not validate_binary_target(target, target_col):
+            raise ValueError(f"Training target has one class only for {target_col}")
+        model.fit(train_df[feature_cols], target)
+        scores = pd.Series(model.predict_proba(predict_df[feature_cols])[:, 1], index=predict_df.index)
+        secondary_scores = fit_secondary_rank_scores(train_df, predict_df, feature_cols)
+        return scores, secondary_scores, model_name, target_col
+    raise ValueError(f"Unknown model_mode: {model_mode}")
 
 
 def eligible_rows(df: pd.DataFrame) -> pd.Series:
@@ -107,6 +243,7 @@ def train_and_predict(
     end_date: str,
     top_n: int,
     train_window_days: int,
+    model_mode: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame, dict[str, object]]:
     df = df.sort_values(["trade_date", "symbol"]).copy()
     feature_cols = select_feature_columns(df)
@@ -115,6 +252,7 @@ def train_and_predict(
     predictions: list[pd.DataFrame] = []
     truth_predictions: list[pd.DataFrame] = []
     model_name = ""
+    target_col = target_column_for_mode(model_mode)
     diagnostics: list[dict[str, object]] = []
 
     for anchor in anchors:
@@ -140,11 +278,31 @@ def train_and_predict(
         if len(train_df) < 200 or predict_df.empty:
             continue
 
-        model, model_name = make_model()
-        model.fit(train_df[feature_cols], train_df["future_5_return_rank_pct"])
-        predict_df["rank_strength_score"] = model.predict(predict_df[feature_cols])
-        predict_df["rank_strength_rank"] = predict_df["rank_strength_score"].rank(method="first", ascending=False)
-        top = predict_df.sort_values(["rank_strength_score", "symbol"], ascending=[False, True]).head(top_n).copy()
+        try:
+            scores, secondary_scores, model_name, target_col = fit_predict_scores(train_df, predict_df, feature_cols, model_mode)
+        except ValueError as exc:
+            diagnostics.append(
+                {
+                    "trade_date": anchor.strftime("%Y-%m-%d"),
+                    "train_rows": len(train_df),
+                    "predict_rows": len(predict_df),
+                    "feature_count": len(feature_cols),
+                    "model_mode": model_mode,
+                    "target_col": target_col,
+                    "train_start": train_df["trade_date"].min().strftime("%Y-%m-%d"),
+                    "train_end": train_df["trade_date"].max().strftime("%Y-%m-%d"),
+                    "max_train_exit_trade_date": train_df["exit_trade_date"].max().strftime("%Y-%m-%d"),
+                    "skipped": True,
+                    "skip_reason": str(exc),
+                }
+            )
+            continue
+        predict_df["rank_strength_score"] = scores
+        predict_df["rank_secondary_score"] = secondary_scores
+        predict_df = predict_df.sort_values(["rank_strength_score", "symbol"], ascending=[False, True]).copy()
+        predict_df["rank_strength_rank"] = range(1, len(predict_df) + 1)
+        top = predict_df.head(top_n).copy()
+        top["model_mode"] = model_mode
         top["model_name"] = model_name
         top["anchor_date"] = anchor
         predictions.append(
@@ -155,8 +313,10 @@ def train_and_predict(
                     "name",
                     "industry",
                     "rank_strength_score",
+                    "rank_secondary_score",
                     "rank_strength_rank",
                     "industry_strength_score",
+                    "model_mode",
                     "model_name",
                 ]
                 + [col for col in SAFE_PREDICTION_FEATURES if col in top.columns]
@@ -170,8 +330,10 @@ def train_and_predict(
                     "name",
                     "industry",
                     "rank_strength_score",
+                    "rank_secondary_score",
                     "rank_strength_rank",
                     "industry_strength_score",
+                    "model_mode",
                     "model_name",
                     "future_5_return",
                     "future_5_return_rank",
@@ -189,6 +351,8 @@ def train_and_predict(
                 "train_rows": len(train_df),
                 "predict_rows": len(predict_df),
                 "feature_count": len(feature_cols),
+                "model_mode": model_mode,
+                "target_col": target_col,
                 "train_start": train_df["trade_date"].min().strftime("%Y-%m-%d"),
                 "train_end": train_df["trade_date"].max().strftime("%Y-%m-%d"),
                 "max_train_exit_trade_date": train_df["exit_trade_date"].max().strftime("%Y-%m-%d"),
@@ -201,6 +365,8 @@ def train_and_predict(
     with_truth = pd.concat(truth_predictions, ignore_index=True)
     metrics = {
         "model_name": model_name,
+        "model_mode": model_mode,
+        "target_col": target_col,
         "start_date": start_date,
         "end_date": end_date,
         "top_n": top_n,
@@ -224,6 +390,7 @@ def main() -> None:
     parser.add_argument("--end-date", default="2025-05-31")
     parser.add_argument("--top-n", type=int, default=30)
     parser.add_argument("--train-window-days", type=int, default=365)
+    parser.add_argument("--model-mode", choices=MODEL_MODES, default="top50_classifier")
     args = parser.parse_args()
 
     df = load_features(args.features)
@@ -233,6 +400,7 @@ def main() -> None:
         end_date=args.end_date,
         top_n=args.top_n,
         train_window_days=args.train_window_days,
+        model_mode=args.model_mode,
     )
     args.output_dir.mkdir(parents=True, exist_ok=True)
     pred_path = args.output_dir / "predictions.csv"

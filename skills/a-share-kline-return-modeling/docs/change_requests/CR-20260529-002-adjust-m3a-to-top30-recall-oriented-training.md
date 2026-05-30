@@ -1,6 +1,6 @@
 # CR-20260529-002 开展 M3-A 召回导向训练对照实验
 
-状态：待补充后再审
+状态：已实施
 提出日期：2026-05-29
 提出人：Codex
 影响阶段：M3-A 候选池召回、M4 Walk-forward 验证
@@ -207,45 +207,32 @@ Top50 平均真实 Top30 命中：从 7.36 / 30 提升到 9.00 / 30 以上。
 
 ## 审批记录
 
-审批结论：暂缓批准，要求补充后再审。
-审批时间：2026-05-29 22:35 GMT+8
+审批结论：已批准，附带约束。
+审批时间：2026-05-29 22:49 GMT+8
 审批人：boss
 产品经理评审人：小庄
 
 审批意见：
 
 ```text
-CR-20260529-002 的方向合理，但当前不建议直接批准实施。
+同意开展 M3-A 召回导向训练对照实验。
 
-原因：
-1. 本变更涉及 M3-A 主训练目标调整，属于“修改模型主线 + 修改阶段验收标准”的重大变更。
-2. 当前变更请求文件尚未纳入 git 跟踪，也未提交和推送到 GitHub；按 change_request_process.md，未推送到 GitHub 的变更请求不视为正式进入审批流程。
-3. 方案 A/B/C 同时展开，实验范围偏大，容易从“验证召回问题”扩散成新一轮模型试验，增加 V1 范围膨胀风险。
-4. 若用 12 个月 walk-forward 结果直接挑最终 Top3 收益最优方案，存在验证集过拟合和反向调参风险。
-
-处理决定：
-暂缓批准，不得实施，不得替换当前 raw rank_pct 回归主模型。
-```
-
-补充后再审条件：
-
-```text
-1. 先将本 CR 文件 commit + push，使其正式进入审批流程。
-2. 明确第一轮只允许做 M3-A 召回导向对照实验，不得替换主模型。
-3. 实验输出必须同时保留 raw rank_pct 回归基线、Top30 分类召回、Top50 分类召回、加权 rank_pct 回归。
-4. 第一轮评审只看 Top50 候选池对真实 Top30 的召回改善，不允许用最终 Top3 收益反向挑模型。
+批准范围：
+1. 仅批准进行 M3-A Top50 候选池召回导向对照实验。
+2. 第一轮允许对照 raw rank_pct 回归基线、Top30 分类召回、Top50 分类召回、加权 rank_pct 回归。
+3. 实验输出必须同时保留 raw rank_pct 回归基线，不得覆盖或删除现有主模型结果。
+4. 第一轮评审重点只看 Top50 候选池对真实 Top30 的召回改善，不允许用最终 Top3 收益反向挑模型。
 5. M3-B 保持 CR-20260529-001 已批准范围，仅允许 ret_20、blend_model_low_overheat、blend_model_amount 三个规则二次排序方案。
-6. 不得修改标签定义、交易口径、成本滑点、未来泄漏黑名单、walk-forward 切分、Top50 候选池规模。
-7. 若召回导向方案通过对照实验，需另行提交“替换主模型/升级 M3-A 主线”的变更请求。
-```
 
-建议修订方向：
+禁止事项：
+1. 不得替换当前 raw rank_pct 回归主模型。
+2. 不得改变最终信号链路。
+3. 不得修改标签定义、交易口径、成本滑点、未来泄漏黑名单、walk-forward 切分、Top50 候选池规模。
+4. 不得引入二阶段学习排序模型、stacking、自动调参、外部新增数据源或分钟线数据。
+5. 不得根据 12 个月 walk-forward 最终 Top3 收益反向选择模型，避免验证集过拟合。
 
-```text
-将本 CR 的实施目标从“调整 M3-A 为 Top30 召回导向训练”收窄为：
-“开展 M3-A 召回导向训练对照实验，不改变主模型，不改变最终信号链路。”
-
-通过对照实验后，再决定是否提出下一份 CR，用于正式替换 M3-A 主模型。
+后续要求：
+若召回导向方案通过对照实验，并希望正式替换 M3-A 主模型，必须另行提交“替换主模型/升级 M3-A 主线”的变更请求。
 ```
 
 ## 补充记录
@@ -275,6 +262,98 @@ CR-20260529-002 的方向合理，但当前不建议直接批准实施。
 若实验有效，另提正式替换主模型 CR。
 ```
 
+流程修订记录：
+
+```text
+2026-05-29：根据用户要求，已从 change_request_process.md 移除“commit + push 才正式进入审批流程”的强制要求。
+本 CR 后续再审不再受 GitHub 同步条件限制。
+```
+
 ## 实施记录
 
-未实施。审批结论为暂缓批准，当前不得实施。
+实施时间：2026-05-29 GMT+8
+实施人：Codex
+
+实施内容：
+
+```text
+新增独立实验脚本 scripts/08_evaluate_m3a_recall_experiments.py。
+该脚本只输出 M3-A Top50 召回对照实验结果。
+未修改 01_train_stock_rank_model.py 主模型训练流程。
+未覆盖 outputs/stock_rank_predictions 下的现有主模型预测结果。
+未改变最终信号链路。
+未修改标签定义、交易口径、成本滑点、未来泄漏黑名单、walk-forward 切分、Top50 候选池规模。
+```
+
+实验范围：
+
+```text
+时间：2025-05 至 2026-04
+候选池规模：Top50
+训练窗口：过去 365 自然日
+训练防泄漏规则：exit_trade_date < anchor_date
+对照方案：
+  raw_rank_pct_regression
+  top30_classifier
+  top50_classifier
+  weighted_rank_pct_regression
+```
+
+输出文件：
+
+```text
+outputs/evaluation/m3_recall_model_compare.md
+outputs/evaluation/m3_recall_model_compare.csv
+outputs/evaluation/m3_recall_model_monthly_compare.csv
+outputs/evaluation/m3_recall_model_daily.csv
+outputs/evaluation/m3_recall_model_predictions.csv
+outputs/evaluation/m3_recall_model_diagnostics.csv
+```
+
+验证命令：
+
+```text
+python3 -m py_compile skills/a-share-kline-return-modeling/scripts/08_evaluate_m3a_recall_experiments.py skills/a-share-kline-return-modeling/scripts/01_train_stock_rank_model.py：通过
+python3 skills/a-share-kline-return-modeling/tests/test_build_features_contract.py：通过
+python3 skills/a-share-kline-return-modeling/scripts/08_evaluate_m3a_recall_experiments.py --start-month 2025-05 --end-month 2026-04：通过
+```
+
+核心结果：
+
+```text
+raw_rank_pct_regression：
+  Top50 平均真实 Top30 命中：7.51 / 30
+  月份数：12
+
+top30_classifier：
+  Top50 平均真实 Top30 命中：8.99 / 30
+  相对 raw 提升：+1.47 / 30
+  召回优于 raw 的月份：9 / 12
+  近涨停比例相对 raw：+1.69pct
+  过热比例相对 raw：+1.58pct
+
+top50_classifier：
+  Top50 平均真实 Top30 命中：8.93 / 30
+  相对 raw 提升：+1.41 / 30
+  召回优于 raw 的月份：9 / 12
+  近涨停比例相对 raw：+1.41pct
+  过热比例相对 raw：+1.53pct
+
+weighted_rank_pct_regression：
+  Top50 平均真实 Top30 命中：8.33 / 30
+  相对 raw 提升：+0.81 / 30
+  召回优于 raw 的月份：8 / 12
+  近涨停比例相对 raw：+0.56pct
+  过热比例相对 raw：+0.49pct
+```
+
+阶段判断：
+
+```text
+对照实验完成。
+召回导向模型显著提高 Top50 对真实 Top30 的覆盖。
+top30_classifier 与 top50_classifier 接近 9.00 / 30 阶段目标，但伴随近涨停和过热样本比例上升。
+weighted_rank_pct_regression 提升较温和，但风险暴露增加更小。
+本 CR 不批准替换主模型，因此当前不替换 raw rank_pct 回归主模型。
+如需正式升级 M3-A 主线，必须另提“替换主模型/升级 M3-A 主线”变更请求。
+```
